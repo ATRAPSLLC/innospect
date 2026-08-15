@@ -46,7 +46,7 @@
 use std::io::{Cursor, Read as _};
 
 use flate2::read::ZlibDecoder;
-use lzma_rs::decompress::{Options, UnpackedSize};
+use lzma_rust2::LzmaReader;
 
 use crate::{
     error::Error,
@@ -358,24 +358,30 @@ fn decompress_zlib(raw: &[u8]) -> Result<Vec<u8>, Error> {
 
 fn decompress_inno_lzma1(raw: &[u8]) -> Result<Vec<u8>, Error> {
     // Inno's 5-byte LZMA1 properties header: byte 0 is
-    // `pb*45 + lp*9 + lc`, bytes 1..4 are LE dict_size. lzma-rs
-    // accepts this directly when configured with
-    // UnpackedSize::UseProvided(None) — that tells the decoder to
-    // skip the (absent) 8-byte uncompressed-size field and rely on
-    // the end-of-payload marker.
-    let mut input = Cursor::new(raw);
+    // `pb*45 + lp*9 + lc`, bytes 1..4 are LE dict_size. lzma-rust2's
+    // LzmaReader consumes a standard 13-byte LZMA-Alone header, so pad
+    // the 5-byte Inno header with the 8-byte unknown-size sentinel
+    // (u64::MAX) and rely on the end-of-payload marker — the same
+    // stream shape the nsis crate decodes.
+    let mut header = Vec::with_capacity(raw.len().saturating_add(8));
+    header.extend_from_slice(raw.get(..5).ok_or_else(|| Error::Decompress {
+        stream: "block (lzma1)",
+        source: std::io::Error::other("LZMA1 header too short"),
+    })?);
+    header.extend_from_slice(&u64::MAX.to_le_bytes());
+    header.extend_from_slice(raw.get(5..).unwrap_or(&[]));
+
     let mut out = Vec::new();
-    let opts = Options {
-        unpacked_size: UnpackedSize::UseProvided(None),
-        ..Options::default()
-    };
-    lzma_rs::lzma_decompress_with_options(&mut input, &mut out, &opts).map_err(|e| {
-        Error::Decompress {
-            stream: "block (lzma1)",
-            // lzma_rs::error::Error → io::Error via the Display impl;
-            // wrap manually so we keep the message.
-            source: std::io::Error::other(e.to_string()),
-        }
+    let mut reader =
+        LzmaReader::new_mem_limit(Cursor::new(header), u32::MAX, None).map_err(|e| {
+            Error::Decompress {
+                stream: "block (lzma1)",
+                source: std::io::Error::other(e.to_string()),
+            }
+        })?;
+    std::io::copy(&mut reader, &mut out).map_err(|e| Error::Decompress {
+        stream: "block (lzma1)",
+        source: e,
     })?;
     Ok(out)
 }

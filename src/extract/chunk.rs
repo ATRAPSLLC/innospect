@@ -243,7 +243,8 @@ pub(crate) fn decompress_chunk(
                 });
             };
             let mut input = io::BufReader::new(stream);
-            lzma_rs::lzma2_decompress(&mut input, &mut out).map_err(|e| Error::Decompress {
+            let mut reader = lzma_rust2::Lzma2Reader::new(&mut input, 32 * 1024 * 1024, None);
+            io::copy(&mut reader, &mut out).map_err(|e| Error::Decompress {
                 stream: "chunk LZMA2",
                 source: io::Error::other(e.to_string()),
             })?;
@@ -256,19 +257,25 @@ pub(crate) fn decompress_chunk(
 fn decompress_lzma1(compressed: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
     // Inno's LZMA1 chunk format: [5-byte properties | raw stream].
     // No 8-byte uncompressed-size field — same as the setup-0 outer
-    // block path. `UseProvided(None)` tells lzma-rs to skip the
-    // (absent) size field and trust the end-of-payload marker.
-    let mut input = io::BufReader::new(compressed);
-    let opts = lzma_rs::decompress::Options {
-        unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(None),
-        memlimit: None,
-        allow_incomplete: false,
-    };
-    lzma_rs::lzma_decompress_with_options(&mut input, out, &opts).map_err(|e| {
-        Error::Decompress {
+    // block path. Pad with the 8-byte unknown-size sentinel (u64::MAX)
+    // so lzma-rust2's LzmaReader can consume the 13-byte LZMA-Alone
+    // header and rely on the end-of-payload marker.
+    let mut header = Vec::with_capacity(compressed.len().saturating_add(8));
+    header.extend_from_slice(compressed.get(..5).ok_or_else(|| Error::Decompress {
+        stream: "chunk LZMA1",
+        source: io::Error::other("LZMA1 header too short"),
+    })?);
+    header.extend_from_slice(&u64::MAX.to_le_bytes());
+    header.extend_from_slice(compressed.get(5..).unwrap_or(&[]));
+
+    let mut reader = lzma_rust2::LzmaReader::new_mem_limit(io::Cursor::new(header), u32::MAX, None)
+        .map_err(|e| Error::Decompress {
             stream: "chunk LZMA1",
             source: io::Error::other(e.to_string()),
-        }
+        })?;
+    io::copy(&mut reader, out).map_err(|e| Error::Decompress {
+        stream: "chunk LZMA1",
+        source: e,
     })?;
     Ok(())
 }
