@@ -39,11 +39,12 @@
 //! the LZMA-Alone 13-byte form: byte 0 is the lc/lp/pb properties
 //! triple encoded as `pb*45 + lp*9 + lc`, bytes 1..4 are the
 //! little-endian dictionary size. There is no 8-byte uncompressed
-//! size — instead the bitstream ends with an end-of-payload marker.
-//! We feed this directly to `lzma_rs` via
-//! [`lzma_rs::decompress::UnpackedSize::UseProvided`]`(None)`.
+//! size - instead the bitstream ends with an end-of-payload marker.
+//! We hand the properties to `lzma_rust2::LzmaReader::new_with_props`
+//! with an unknown uncompressed size, so the decoder stops at that
+//! marker.
 
-use std::io::{Cursor, Read as _};
+use std::io::Read as _;
 
 use flate2::read::ZlibDecoder;
 use lzma_rust2::LzmaReader;
@@ -181,7 +182,7 @@ fn decompress_block_inner(
     let bytes = match compression {
         BlockCompression::Stored => raw.into_boxed_slice(),
         BlockCompression::Zlib => decompress_zlib(&raw)?.into_boxed_slice(),
-        BlockCompression::Lzma1 => decompress_inno_lzma1(&raw)?.into_boxed_slice(),
+        BlockCompression::Lzma1 => decompress_inno_lzma1(&raw, "block (lzma1)")?.into_boxed_slice(),
     };
 
     let consumed = header_consumed
@@ -356,33 +357,25 @@ fn decompress_zlib(raw: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-fn decompress_inno_lzma1(raw: &[u8]) -> Result<Vec<u8>, Error> {
+/// Decodes Inno's LZMA1 framing, shared by the setup-0 block and
+/// setup-1 chunk paths. `stream` names the caller in the error.
+pub(crate) fn decompress_inno_lzma1(raw: &[u8], stream: &'static str) -> Result<Vec<u8>, Error> {
     // Inno's 5-byte LZMA1 properties header: byte 0 is
-    // `pb*45 + lp*9 + lc`, bytes 1..4 are LE dict_size. lzma-rust2's
-    // LzmaReader consumes a standard 13-byte LZMA-Alone header, so pad
-    // the 5-byte Inno header with the 8-byte unknown-size sentinel
-    // (u64::MAX) and rely on the end-of-payload marker — the same
-    // stream shape the nsis crate decodes.
-    let mut header = Vec::with_capacity(raw.len().saturating_add(8));
-    header.extend_from_slice(raw.get(..5).ok_or_else(|| Error::Decompress {
-        stream: "block (lzma1)",
-        source: std::io::Error::other("LZMA1 header too short"),
-    })?);
-    header.extend_from_slice(&u64::MAX.to_le_bytes());
-    header.extend_from_slice(raw.get(5..).unwrap_or(&[]));
+    // `pb*45 + lp*9 + lc`, bytes 1..4 are LE dict_size. There is no
+    // 8-byte uncompressed-size field, so pass u64::MAX (unknown) and
+    // let the decoder stop at the end-of-payload marker.
+    let [props, d0, d1, d2, d3, payload @ ..] = raw else {
+        return Err(Error::Truncated {
+            what: "LZMA1 properties",
+        });
+    };
+    let dict_size = u32::from_le_bytes([*d0, *d1, *d2, *d3]);
+    let decompress_err = |e: std::io::Error| Error::Decompress { stream, source: e };
 
+    let mut reader = LzmaReader::new_with_props(payload, u64::MAX, *props, dict_size, None)
+        .map_err(decompress_err)?;
     let mut out = Vec::new();
-    let mut reader =
-        LzmaReader::new_mem_limit(Cursor::new(header), u32::MAX, None).map_err(|e| {
-            Error::Decompress {
-                stream: "block (lzma1)",
-                source: std::io::Error::other(e.to_string()),
-            }
-        })?;
-    std::io::copy(&mut reader, &mut out).map_err(|e| Error::Decompress {
-        stream: "block (lzma1)",
-        source: e,
-    })?;
+    reader.read_to_end(&mut out).map_err(decompress_err)?;
     Ok(out)
 }
 
