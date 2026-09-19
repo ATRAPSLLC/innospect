@@ -30,6 +30,7 @@ use bzip2::read::BzDecoder;
 use flate2::read::ZlibDecoder;
 
 use crate::{
+    decompress::block::decompress_inno_lzma1,
     error::Error,
     extract::slice::SliceReader,
     header::CompressMethod,
@@ -227,57 +228,49 @@ pub(crate) fn decompress_chunk(
             })?;
         }
         CompressMethod::Lzma1 => {
-            // Inno's LZMA1 wrap: 5-byte properties + raw LZMA1.
-            // We already have a working call site for setup-0
-            // outer block in `decompress::block` — replicate the
-            // approach here.
-            decompress_lzma1(compressed, &mut out)?;
+            // Inno's LZMA1 wrap: 5-byte properties + raw LZMA1,
+            // the same framing as the setup-0 outer block.
+            out = decompress_inno_lzma1(compressed, "chunk LZMA1")?;
         }
         CompressMethod::Lzma2 => {
-            // Inno's LZMA2 wrap: 1-byte property prefix + raw
-            // LZMA2 stream. lzma-rs ignores the property byte
-            // (memory unbounded), so just skip it.
-            let [_inno_prop, stream @ ..] = compressed else {
+            // Inno's LZMA2 wrap: 1-byte dictionary-size property +
+            // raw LZMA2 stream. lzma-rust2 treats the dictionary size
+            // as a hard window limit, so it must come from the
+            // property byte rather than a fixed default.
+            let [prop, stream @ ..] = compressed else {
                 return Err(Error::Truncated {
                     what: "LZMA2 prop byte",
                 });
             };
-            let mut input = io::BufReader::new(stream);
-            let mut reader = lzma_rust2::Lzma2Reader::new(&mut input, 32 * 1024 * 1024, None);
-            io::copy(&mut reader, &mut out).map_err(|e| Error::Decompress {
-                stream: "chunk LZMA2",
-                source: io::Error::other(e.to_string()),
-            })?;
+            let dict_size = lzma2_dict_size(*prop)?;
+            let mut reader = lzma_rust2::Lzma2Reader::new(stream, dict_size, None);
+            reader
+                .read_to_end(&mut out)
+                .map_err(|e| Error::Decompress {
+                    stream: "chunk LZMA2",
+                    source: e,
+                })?;
         }
     }
 
     Ok(Arc::<[u8]>::from(out))
 }
 
-fn decompress_lzma1(compressed: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
-    // Inno's LZMA1 chunk format: [5-byte properties | raw stream].
-    // No 8-byte uncompressed-size field — same as the setup-0 outer
-    // block path. Pad with the 8-byte unknown-size sentinel (u64::MAX)
-    // so lzma-rust2's LzmaReader can consume the 13-byte LZMA-Alone
-    // header and rely on the end-of-payload marker.
-    let mut header = Vec::with_capacity(compressed.len().saturating_add(8));
-    header.extend_from_slice(compressed.get(..5).ok_or_else(|| Error::Decompress {
-        stream: "chunk LZMA1",
-        source: io::Error::other("LZMA1 header too short"),
-    })?);
-    header.extend_from_slice(&u64::MAX.to_le_bytes());
-    header.extend_from_slice(compressed.get(5..).unwrap_or(&[]));
-
-    let mut reader = lzma_rust2::LzmaReader::new_mem_limit(io::Cursor::new(header), u32::MAX, None)
-        .map_err(|e| Error::Decompress {
-            stream: "chunk LZMA1",
-            source: io::Error::other(e.to_string()),
-        })?;
-    io::copy(&mut reader, out).map_err(|e| Error::Decompress {
-        stream: "chunk LZMA1",
-        source: e,
-    })?;
-    Ok(())
+/// Decodes the LZMA2 dictionary-size property byte: values 0..=39
+/// encode `(2 | (p & 1)) << (p / 2 + 11)`, and 40 means 4 GiB - 1.
+fn lzma2_dict_size(prop: u8) -> Result<u32, Error> {
+    match prop {
+        0..=39 => {
+            let mantissa = 2 | u32::from(prop & 1);
+            let shift = u32::from(prop / 2).saturating_add(11);
+            Ok(mantissa << shift)
+        }
+        40 => Ok(u32::MAX),
+        _ => Err(Error::Decompress {
+            stream: "chunk LZMA2",
+            source: io::Error::other(format!("invalid LZMA2 dictionary property {prop}")),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +299,18 @@ mod tests {
     ///
     /// This validates the chunk reader's Legacy branch end-to-end
     /// without requiring a real pre-6.4 installer sample.
+    #[test]
+    fn lzma2_dict_size_decodes_property_byte() {
+        assert_eq!(lzma2_dict_size(0).unwrap(), 4 << 10);
+        assert_eq!(lzma2_dict_size(1).unwrap(), 6 << 10);
+        assert_eq!(lzma2_dict_size(24).unwrap(), 16 << 20);
+        // `Compression=lzma2/ultra64` uses a 64 MiB dictionary.
+        assert_eq!(lzma2_dict_size(28).unwrap(), 64 << 20);
+        assert_eq!(lzma2_dict_size(39).unwrap(), 3 << 30);
+        assert_eq!(lzma2_dict_size(40).unwrap(), u32::MAX);
+        assert!(lzma2_dict_size(41).is_err());
+    }
+
     #[test]
     fn legacy_arc4_round_trip_synthetic() {
         // 1. Plaintext payload.
