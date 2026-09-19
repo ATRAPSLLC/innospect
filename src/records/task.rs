@@ -1,4 +1,4 @@
-//! `TSetupTaskEntry` — installable task definition (`[Tasks]`
+//! `TSetupTaskEntry` - installable task definition (`[Tasks]`
 //! section directives).
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
@@ -57,7 +57,7 @@ pub struct TaskEntry {
     pub name: String,
     /// `Description:` directive.
     pub description: String,
-    /// `GroupDescription:` directive — section header in the wizard's
+    /// `GroupDescription:` directive - section header in the wizard's
     /// task list.
     pub group_description: String,
     /// `Components:` filter (semicolon-separated).
@@ -66,7 +66,7 @@ pub struct TaskEntry {
     pub languages: String,
     /// `Check:` directive. 4.0.0+ (or ISX 1.3.24+).
     pub check: String,
-    /// `Level:` directive — task priority.
+    /// `Level:` directive - task priority.
     pub level: i32,
     /// `Used:` boolean. Defaults to `true` on older versions.
     pub used: bool,

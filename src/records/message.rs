@@ -1,4 +1,4 @@
-//! `TSetupCustomMessageEntry` — `[CustomMessages]` localized
+//! `TSetupCustomMessageEntry` - `[CustomMessages]` localized
 //! string overrides.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
@@ -30,7 +30,7 @@ pub struct MessageEntry {
     /// Encoded in the per-installer default codepage (UTF-8 in
     /// modern Unicode builds).
     pub name: Vec<u8>,
-    /// `Value:` directive — localized message body. Encoded in the
+    /// `Value:` directive - localized message body. Encoded in the
     /// codepage of the entry's language; see [`Self::language`].
     pub value: Vec<u8>,
     /// Language index into the parsed [`crate::records::language`]

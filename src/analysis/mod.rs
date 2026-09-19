@@ -6,12 +6,12 @@
 //! parsed records. The submodules here re-shape those records into
 //! analyst-friendly views:
 //!
-//! - [`exec`] — install + uninstall command execution.
-//! - [`registryop`] — registry mutations classified by operation
+//! - [`exec`] - install + uninstall command execution.
+//! - [`registryop`] - registry mutations classified by operation
 //!   kind.
-//! - [`shortcut`] — `[Icons]` entries joined to their `[Files]`
+//! - [`shortcut`] - `[Icons]` entries joined to their `[Files]`
 //!   targets where possible.
-//! - [`compiledcode`] — IFPS container fingerprint for the
+//! - [`compiledcode`] - IFPS container fingerprint for the
 //!   compiled `[Code]` blob (header-only at the moment).
 //!
 //! Every view here borrows from the underlying record or buffer;

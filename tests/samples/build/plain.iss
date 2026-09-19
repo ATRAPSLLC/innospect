@@ -20,7 +20,7 @@ SolidCompression=yes
 [Files]
 Source: "payload.txt"; DestDir: "{app}"; Flags: ignoreversion
 
-; See encrypted.iss for the rationale — every rebuild needs at least one
+; See encrypted.iss for the rationale - every rebuild needs at least one
 ; [Run]/[UninstallRun] entry to exercise `RunEntry::read` (Run.OnLog,
 ; Run.Bitness cutoffs).
 [Run]

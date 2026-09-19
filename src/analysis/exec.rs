@@ -14,9 +14,9 @@ use crate::records::run::RunEntry;
 /// Whether a command runs at install time or at uninstall time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecPhase {
-    /// `[Run]` — fires after files are copied.
+    /// `[Run]` - fires after files are copied.
     Install,
-    /// `[UninstallRun]` — fires before files are removed.
+    /// `[UninstallRun]` - fires before files are removed.
     Uninstall,
 }
 
@@ -35,7 +35,7 @@ pub struct ExecCommand<'a> {
 }
 
 impl<'a> ExecCommand<'a> {
-    /// Returns the `Filename:` directive — the executable, batch
+    /// Returns the `Filename:` directive - the executable, batch
     /// file, or shell URL to invoke. Inno calls this field `Name`
     /// internally; the analyst-friendly view exposes it as
     /// `filename` to match the `[Run]` directive name.

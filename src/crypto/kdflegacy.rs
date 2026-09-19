@@ -58,12 +58,12 @@ pub(crate) fn legacy_hash_family(version: &crate::version::Version) -> LegacyHas
 pub(crate) enum LegacyStoredHash {
     /// `< 4.2.0`.
     Crc32(u32),
-    /// `4.2.0..4.2.2` — bare MD5 (no salt). `salt` is unused but
+    /// `4.2.0..4.2.2` - bare MD5 (no salt). `salt` is unused but
     /// kept for API uniformity.
     Md5Bare([u8; 16]),
-    /// `4.2.2..5.3.9` — MD5 + 8-byte salt + literal prefix.
+    /// `4.2.2..5.3.9` - MD5 + 8-byte salt + literal prefix.
     Md5Salted { hash: [u8; 16], salt: [u8; 8] },
-    /// `5.3.9..6.4` — SHA-1 + 8-byte salt + literal prefix.
+    /// `5.3.9..6.4` - SHA-1 + 8-byte salt + literal prefix.
     Sha1Salted { hash: [u8; 20], salt: [u8; 8] },
 }
 
@@ -74,7 +74,7 @@ pub(crate) const PASSWORD_CHECK_HASH_PREFIX: &[u8] = b"PasswordCheckHash";
 
 /// Verifies a candidate password against the stored hash form.
 /// `password` is encoded according to the installer's wire string
-/// type — UTF-16LE for Unicode builds (5.6+ default, plus any pre-5.6
+/// type - UTF-16LE for Unicode builds (5.6+ default, plus any pre-5.6
 /// build with the `(u)` marker), Windows-1252 for ANSI builds. This
 /// matches innoextract `info::get_key` (`research/src/setup/info.cpp:322-352`)
 /// which feeds the password to the hasher via `util::from_utf8(...,
@@ -135,10 +135,10 @@ pub(crate) fn verify_password_legacy(
 /// (`research/src/setup/info.cpp:322-352`), and the chunk
 /// decryptor (`research/src/stream/chunk.cpp:196-202`) hashes
 /// `salt || key` as-is. Using the wrong encoding produces a
-/// valid-looking RC4 key that decrypts to garbage — observable as
+/// valid-looking RC4 key that decrypts to garbage - observable as
 /// LZMA stream-format errors, not a clean failure.
 ///
-/// Returns the **full** hash digest as the RC4 key — 20 bytes for
+/// Returns the **full** hash digest as the RC4 key - 20 bytes for
 /// SHA-1 (5.3.9..6.4 era) and 16 bytes for MD5 (pre-5.3.9). RC4's
 /// KSA accepts variable-length keys, so the digest is fed in
 /// unmodified.
@@ -282,7 +282,7 @@ mod tests {
         let sha1_key = arc4_chunk_key("test", &salt, true, true);
         assert_eq!(md5_key.len(), 16, "MD5 digest");
         assert_eq!(sha1_key.len(), 20, "SHA-1 digest");
-        // First 16 bytes are guaranteed to differ — different
+        // First 16 bytes are guaranteed to differ - different
         // hash families.
         assert_ne!(&md5_key[..], &sha1_key[..16]);
     }
@@ -298,7 +298,7 @@ mod tests {
     }
 
     /// ANSI vs Unicode password encoding produces different keys
-    /// for the same password — the bug surfaced by the new
+    /// for the same password - the bug surfaced by the new
     /// chunk-encrypted ANSI samples (5.5.7 / 6.0.0u / 6.3.0).
     #[test]
     fn arc4_key_ansi_differs_from_unicode() {

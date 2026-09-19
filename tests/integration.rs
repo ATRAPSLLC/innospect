@@ -35,8 +35,8 @@ fn sample(name: &str) -> Option<Vec<u8>> {
 
 /// Lists every `*.exe` directly under `tests/samples/<subdir>/`.
 /// Returns `None` (with a skip message) if the directory is missing.
-/// Returns `Some(empty)` callers should treat as "no samples present
-/// — assert if your test requires at least one".
+/// Returns `Some(empty)` callers should treat as "no samples present -
+/// assert if your test requires at least one".
 fn samples_in(subdir: &str) -> Option<Vec<(String, PathBuf)>> {
     let dir: PathBuf = format!("{}/tests/samples/{subdir}", env!("CARGO_MANIFEST_DIR")).into();
     let entries = match std::fs::read_dir(&dir) {
@@ -79,7 +79,7 @@ fn rejects_non_pe_input() {
 
 #[test]
 fn rejects_bare_pe_with_no_inno_payload() {
-    // Minimal valid-MZ buffer that is otherwise zeroed — no SetupLdr
+    // Minimal valid-MZ buffer that is otherwise zeroed - no SetupLdr
     // magic, no legacy 0x30 pointer.
     let mut buf = vec![0u8; 4096];
     buf[0] = b'M';
@@ -108,14 +108,14 @@ fn heidisql_6_4_0_1_identifies() {
         v.marker_str()
     );
     // HeidiSQL ships an ANSI-encoded installer despite the 6.4.0.1
-    // age — the `(u)` suffix is absent in the marker.
+    // age - the `(u)` suffix is absent in the marker.
     assert!(!v.is_unicode(), "marker = {:?}", v.marker_str());
     assert!(!v.is_isx());
     assert!(!v.is_16bit());
     assert_eq!(v.marker_str(), "Inno Setup Setup Data (6.4.0.1)");
     assert_eq!(inst.variant(), Variant::Stock);
     assert_eq!(inst.setup_ldr_family(), SetupLdrFamily::V5_1_5);
-    // 6.4.0.1 predates the 6.5.2 v2 bump — record-version 1.
+    // 6.4.0.1 predates the 6.5.2 v2 bump - record-version 1.
     assert_eq!(
         inst.offset_table().source.generation,
         OffsetTableGeneration::V1,
@@ -148,7 +148,7 @@ fn heidisql_6_4_0_1_identifies() {
     assert_eq!(header.app_version(), Some("12.17.0.7270"));
     assert_eq!(header.app_publisher(), Some("Ansgar Becker"));
     assert_eq!(header.default_dir_name(), Some("{autopf}\\HeidiSQL"));
-    // ChangesAssociations is a 6.0+ field — verify it parsed via the
+    // ChangesAssociations is a 6.0+ field - verify it parsed via the
     // generic accessor too.
     assert!(header.string(HeaderString::ChangesAssociations).is_some());
 
@@ -162,7 +162,7 @@ fn heidisql_6_4_0_1_identifies() {
     // 6.4.0.1 predates 6.5.0, so NumISSigKeyEntries is absent.
     assert_eq!(counts.iss_sig_keys, None);
 
-    // Embedded blobs — convenience accessors fold empty wire
+    // Embedded blobs - convenience accessors fold empty wire
     // strings to None. HeidiSQL has License + CompiledCode, no
     // info screens.
     let license = inst.license_text().expect("license_text present");
@@ -222,7 +222,7 @@ fn heidisql_6_4_0_1_identifies() {
 
     // Bytecode disassembly: every internal proc must decode
     // cleanly into at least one instruction, and the very last
-    // one must be Return (Cm_R = 9) — script-defined procs end
+    // one must be Return (Cm_R = 9) - script-defined procs end
     // with Ret.
     let mut total_instructions = 0usize;
     let mut external_returns_none = 0usize;
@@ -260,7 +260,7 @@ fn heidisql_6_4_0_1_identifies() {
         "expected disassemble() to return None for external procs",
     );
 
-    // Container summary line — triage-friendly one-liner.
+    // Container summary line - triage-friendly one-liner.
     let summary = format!("{}", cc.display_summary());
     assert!(summary.starts_with("IFPS build "));
     assert!(summary.contains("internal"));
@@ -371,7 +371,7 @@ fn heidisql_6_4_0_1_identifies() {
         );
     }
 
-    // CustomMessages: HeidiSQL ships the canonical Inno set —
+    // CustomMessages: HeidiSQL ships the canonical Inno set -
     // "NameAndVersion" is the first one and present in every Inno
     // Setup installer that uses the standard language files. Each
     // CustomMessage's `language` index must point at a valid
@@ -398,7 +398,7 @@ fn heidisql_6_4_0_1_identifies() {
 
     // HeidiSQL has at least one task whose name string decodes via
     // the per-installer Unicode codepage. We don't need to check
-    // exact set — just that all 5 tasks parse cleanly with non-empty
+    // exact set - just that all 5 tasks parse cleanly with non-empty
     // names.
     for task in inst.tasks() {
         assert!(
@@ -431,7 +431,7 @@ fn heidisql_6_4_0_1_identifies() {
     assert_eq!(main_exe.location_index, 0);
 
     // At least one registry entry must have a Subkey containing
-    // "HeidiSQL" — verifies the registry record stream parsed the
+    // "HeidiSQL" - verifies the registry record stream parsed the
     // installer's HKCU/HKLM writes.
     assert!(
         inst.registry_entries()
@@ -527,7 +527,7 @@ fn heidisql_6_4_0_1_identifies() {
 
     // Solid LZMA proof: license.txt lives in the same chunk as
     // heidisql.exe but at a non-zero chunk_sub_offset. Both
-    // extractions must succeed — the second hits the OnceLock cache.
+    // extractions must succeed - the second hits the OnceLock cache.
     let license = inst
         .files()
         .iter()
@@ -680,7 +680,7 @@ fn imagemagick_6_1_0_identifies() {
         "magick.exe missing from files",
     );
     // At least one registry entry should be for the file-association
-    // class — verifies the registry record stream parsed.
+    // class - verifies the registry record stream parsed.
     assert!(
         inst.registry_entries()
             .iter()
@@ -701,7 +701,7 @@ fn imagemagick_6_1_0_identifies() {
         innospect::DataChecksum::Sha1(_)
     ));
 
-    // Extract magick.exe (LZMA1 + 5309 BCJ on a pre-6.4 sample —
+    // Extract magick.exe (LZMA1 + 5309 BCJ on a pre-6.4 sample -
     // exercises a different code path than HeidiSQL's LZMA2).
     // Checksum verification is enforced internally; the mere fact
     // that extract_to_vec returns `Ok` proves the checksum matched.

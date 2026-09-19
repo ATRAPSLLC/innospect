@@ -1,4 +1,4 @@
-//! `TSetupIconEntry` — `[Icons]` directive entry (Start Menu /
+//! `TSetupIconEntry` - `[Icons]` directive entry (Start Menu /
 //! desktop shortcut).
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
@@ -33,7 +33,7 @@ use crate::{
     version::Version,
 };
 
-/// `TSetupCloseOnExit` — wizard close-on-exit policy for the
+/// `TSetupCloseOnExit` - wizard close-on-exit policy for the
 /// shortcut's launched process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -58,7 +58,7 @@ stable_name_enum!(CloseOnExit, {
 #[allow(missing_docs)]
 pub enum IconFlag {
     NeverUninstall,
-    /// Pre-1.3.26 only — replaced by `ShowCmd` later.
+    /// Pre-1.3.26 only - replaced by `ShowCmd` later.
     RunMinimized,
     CreateOnlyIfFileExists,
     UseAppPaths,
@@ -83,7 +83,7 @@ stable_flag_enum!(IconFlag, {
 /// Parsed `TSetupIconEntry`.
 #[derive(Clone, Debug)]
 pub struct IconEntry {
-    /// `Name:` directive — full shortcut path including `.lnk`.
+    /// `Name:` directive - full shortcut path including `.lnk`.
     pub name: String,
     /// `Filename:` directive.
     pub filename: String,

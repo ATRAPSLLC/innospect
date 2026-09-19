@@ -1,9 +1,9 @@
 //! Slice reader for `setup-1` payload bytes.
 //!
 //! Inno Setup stores the payload chunks either:
-//! - **Embedded** — appended after the PE sections inside the
+//! - **Embedded** - appended after the PE sections inside the
 //!   installer EXE (when `OffsetTable.offset_setup1 != 0`).
-//! - **External** — in sibling files `setup-1.bin`, `setup-2.bin`,
+//! - **External** - in sibling files `setup-1.bin`, `setup-2.bin`,
 //!   ... (when `offset_setup1 == 0`). Not currently supported.
 //!
 //! The embedded path is implemented here. Each chunk lives at
@@ -19,7 +19,7 @@ use crate::error::Error;
 /// embedded region, surface [`Error::ExternalSlice`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SliceReader<'a> {
-    /// Embedded `setup-1` bytes — the slice of the input EXE
+    /// Embedded `setup-1` bytes - the slice of the input EXE
     /// starting at `offset_setup1` and running to end-of-payload.
     /// Empty when external slices are in use.
     setup1: &'a [u8],

@@ -1,4 +1,4 @@
-//! `TSetupTypeEntry` — install-type definition (full / compact /
+//! `TSetupTypeEntry` - install-type definition (full / compact /
 //! custom / user-named) read from setup-0 block 1.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
@@ -22,18 +22,18 @@ use crate::{
     version::Version,
 };
 
-/// `TSetupTypeType` — kind of install type.
+/// `TSetupTypeType` - kind of install type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SetupTypeKind {
-    /// `User` — user-named type defined in `[Types]`.
+    /// `User` - user-named type defined in `[Types]`.
     User,
-    /// `DefaultFull` — compiler-emitted "Full installation" entry.
+    /// `DefaultFull` - compiler-emitted "Full installation" entry.
     DefaultFull,
-    /// `DefaultCompact` — compiler-emitted "Compact installation"
+    /// `DefaultCompact` - compiler-emitted "Compact installation"
     /// entry.
     DefaultCompact,
-    /// `DefaultCustom` — compiler-emitted "Custom installation" entry.
+    /// `DefaultCustom` - compiler-emitted "Custom installation" entry.
     DefaultCustom,
 }
 
@@ -47,9 +47,9 @@ stable_name_enum!(SetupTypeKind, {
 /// Parsed `TSetupTypeEntry`.
 #[derive(Clone, Debug)]
 pub struct TypeEntry {
-    /// `Name:` directive value — the type's identifier.
+    /// `Name:` directive value - the type's identifier.
     pub name: String,
-    /// `Description:` directive value — wizard-shown label.
+    /// `Description:` directive value - wizard-shown label.
     pub description: String,
     /// `Languages:` filter (semicolon-separated). Inno Setup 4.0.1+.
     pub languages: String,
@@ -65,7 +65,7 @@ pub struct TypeEntry {
     pub kind: Option<SetupTypeKind>,
     /// Raw `Typ` byte.
     pub kind_raw: u8,
-    /// `Size` — uncompressed-files total when this type is selected.
+    /// `Size` - uncompressed-files total when this type is selected.
     /// `i64` from 4.0.0+; promoted from `i32` on earlier versions.
     pub size: i64,
 }

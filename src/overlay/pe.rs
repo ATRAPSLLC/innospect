@@ -1,6 +1,6 @@
 //! Locate the `SetupLdrOffsetTable` bytes inside the PE container.
 //!
-//! # Strategy 1 — legacy (pre-5.1.5)
+//! # Strategy 1 - legacy (pre-5.1.5)
 //!
 //! Read three dwords at file offset `0x30`: `'Inno'` magic
 //! (`0x6f6e6e49`), then a pointer to the offset-table record, then
@@ -8,11 +8,11 @@
 //! the magic matches and pointer + ~pointer round-trip, we follow
 //! the pointer. This must be tried **before** the signature scan
 //! because the same `rDlPtS<NN>` magic appears as a literal string
-//! constant inside the loader's code section in pre-5.1.5 builds —
+//! constant inside the loader's code section in pre-5.1.5 builds -
 //! a naïve scan would lock onto that false match instead of the
 //! real offset-table copy that the `0x30` pointer leads to.
 //!
-//! # Strategy 2 — modern (5.1.5+)
+//! # Strategy 2 - modern (5.1.5+)
 //!
 //! Scan the input for the 12-byte SetupLdr magic. The 5.1.5+ format
 //! moved the offset table into a PE resource (id 11111) and the
@@ -130,7 +130,7 @@ fn try_signature_scan(input: &[u8]) -> Option<OffsetTableLocation> {
     })
 }
 
-/// Naïve memmem — fine for our inputs (typical Inno installers are
+/// Naïve memmem - fine for our inputs (typical Inno installers are
 /// 1–50 MB, signature is 12 bytes, only one match expected). Avoids a
 /// dependency on the `memchr` crate.
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

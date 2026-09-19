@@ -190,7 +190,7 @@ pub struct InnoInstaller<'a> {
     password_used: Option<String>,
 }
 
-/// Eagerly-parsed record sections — every record type stored in
+/// Eagerly-parsed record sections - every record type stored in
 /// the two block streams of `setup-0`.
 #[derive(Clone, Debug, Default)]
 struct ParsedRecords {
@@ -216,7 +216,7 @@ struct ParsedRecords {
 
 impl<'a> InnoInstaller<'a> {
     /// Parses an Inno Setup installer from a byte slice. **Does
-    /// not attempt to decrypt** — encrypted chunks remain
+    /// not attempt to decrypt** - encrypted chunks remain
     /// observable as `ChunkEncrypted` data-entry flags, and
     /// [`Self::extract`] returns [`Error::Encrypted`] for them.
     /// Use [`Self::from_bytes_with_passwords`] to additionally
@@ -239,9 +239,9 @@ impl<'a> InnoInstaller<'a> {
     ///
     /// # Errors
     ///
-    /// - [`Error::PasswordRequired`] — installer is encrypted but
+    /// - [`Error::PasswordRequired`] - installer is encrypted but
     ///   `passwords` is empty.
-    /// - [`Error::WrongPassword`] — no candidate matched.
+    /// - [`Error::WrongPassword`] - no candidate matched.
     /// - All standard parse errors per [`Self::from_bytes`].
     pub fn from_bytes_with_passwords(data: &'a [u8], passwords: &[&str]) -> Result<Self, Error> {
         Self::parse(data, Some(passwords))
@@ -290,7 +290,7 @@ impl<'a> InnoInstaller<'a> {
         // streams themselves are XChaCha20-encrypted and need the
         // derived key to decrypt. For `euFiles` the trial would
         // run the same way; for the no-encryption case it's a
-        // no-op. The legacy (pre-6.4) trial sits below — that path
+        // no-op. The legacy (pre-6.4) trial sits below - that path
         // needs `HeaderTail.legacy_password_*` which only exists
         // post-decompression.
         let (mut encryption_key, mut password_used): (Option<[u8; 32]>, Option<String>) =
@@ -340,7 +340,7 @@ impl<'a> InnoInstaller<'a> {
                 } else {
                     // Encrypted but no key supplied (caller went
                     // through `from_bytes` or `from_bytes_with_passwords`
-                    // for an encrypted installer — the plain
+                    // for an encrypted installer - the plain
                     // `from_bytes` path lands here for euFull).
                     (
                         Box::<[u8]>::default(),
@@ -519,8 +519,8 @@ impl<'a> InnoInstaller<'a> {
     }
 
     /// Returns the encryption metadata for 6.4.0+ installers, or
-    /// `None` if not encrypted (or if the version is older than 6.4
-    /// — pre-6.4 encryption is per-chunk, surfaced through the
+    /// `None` if not encrypted (or if the version is older than 6.4 -
+    /// pre-6.4 encryption is per-chunk, surfaced through the
     /// `DataEntry::ChunkEncrypted` flag on each affected chunk).
     #[must_use]
     pub fn encryption(&self) -> Option<&EncryptionInfo> {
@@ -547,7 +547,7 @@ impl<'a> InnoInstaller<'a> {
     ///   **best-effort** for known architecture atoms
     ///   (`x86`, `x86os`, `x86compatible`, `x64`, `x64os`,
     ///   `x64compatible`, `arm32compatible`, `arm64`, `ia64`).
-    ///   Boolean operators (`and`, `or`, `not`) are NOT evaluated —
+    ///   Boolean operators (`and`, `or`, `not`) are NOT evaluated -
     ///   any atom that appears in the expression produces its
     ///   architecture in the result, so `not x64` reports `Amd64`
     ///   the same as bare `x64`. Callers that need a faithful
@@ -583,7 +583,7 @@ impl<'a> InnoInstaller<'a> {
     /// Modern Inno builds always carry the `LicenseText` AnsiString
     /// slot, but populate it with an empty string when no license
     /// is configured. This accessor folds that empty case into
-    /// `None` — `Some(bytes)` always has `bytes.len() > 0`.
+    /// `None` - `Some(bytes)` always has `bytes.len() > 0`.
     ///
     /// The bytes are codepage-encoded per the installer's language
     /// table; callers that need a `String` should run them through
@@ -631,7 +631,7 @@ impl<'a> InnoInstaller<'a> {
     /// Returns the compiled `[Code]` PascalScript blob, or `None`
     /// if the installer does not ship a `[Code]` section.
     ///
-    /// The blob is an IFPS container — `IFPS`-magic followed by a
+    /// The blob is an IFPS container - `IFPS`-magic followed by a
     /// header, name table, type table, globals, procedures, and
     /// bytecode. This accessor surfaces the raw bytes; the parsed
     /// container view lives at [`Self::compiledcode`]. Empty
@@ -650,7 +650,7 @@ impl<'a> InnoInstaller<'a> {
     /// blob is present.
     ///
     /// The full
-    /// [`pascalscript::Container`] surface is exposed —
+    /// [`pascalscript::Container`] surface is exposed -
     /// header, types, procs (script-defined and imported
     /// externals), vars. The container's API is Inno-agnostic
     /// (designed for an eventual standalone-crate split); see
@@ -659,7 +659,7 @@ impl<'a> InnoInstaller<'a> {
     ///
     /// # Errors
     ///
-    /// `Some(Err(_))` when the blob is present but malformed —
+    /// `Some(Err(_))` when the blob is present but malformed -
     /// bad magic, unsupported `PSBuildNo`, truncated table, or
     /// out-of-range type / bytecode reference. The error wraps a
     /// [`pascalscript::Error`] inside
@@ -678,7 +678,7 @@ impl<'a> InnoInstaller<'a> {
     /// Returns a one-line description for the security-relevant
     /// subset of registered functions (registry mutations, command
     /// execution, file operations, network downloads, privilege
-    /// checks). Returns `None` for names outside that subset —
+    /// checks). Returns `None` for names outside that subset -
     /// see [`crate::analysis::compiledcode::INNO_API`] for the
     /// curated list.
     #[must_use]
@@ -784,7 +784,7 @@ impl<'a> InnoInstaller<'a> {
         &self.records.uninstall_run
     }
 
-    /// Parsed file-location records — bookkeeping for the chunks of
+    /// Parsed file-location records - bookkeeping for the chunks of
     /// `setup-1` payload (one per file-content slot, including
     /// embedded files like the uninstaller). Lives in setup-0's
     /// second decompressed block.
@@ -821,7 +821,7 @@ impl<'a> InnoInstaller<'a> {
     /// or [`DeleteKey`](crate::analysis::RegistryOpKind::DeleteKey)
     /// based on the entry's flag bitset.
     ///
-    /// Uninstall-time effects are not classified here — inspect
+    /// Uninstall-time effects are not classified here - inspect
     /// the underlying entry's `flags` for `UninsDeleteValue`,
     /// `UninsDeleteEntireKey`, etc.
     #[must_use]
@@ -840,7 +840,7 @@ impl<'a> InnoInstaller<'a> {
     }
 
     /// Returns `true` when the installer carries any kind of
-    /// encryption — modern (6.4+ XChaCha20) or legacy (pre-6.4
+    /// encryption - modern (6.4+ XChaCha20) or legacy (pre-6.4
     /// ARC4-via-`shPassword` flag).
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
@@ -922,7 +922,7 @@ impl<'a> InnoInstaller<'a> {
     /// `SetupExeMode` slot to the uninstaller magic.
     ///
     /// Inno's uninstaller stub isn't a separately-packaged file in
-    /// the chunk stream — at install time `Setup.exe` copies its
+    /// the chunk stream - at install time `Setup.exe` copies its
     /// own bytes (`NewParamStr(0)` in
     /// `Setup.Install.pas:1629-1631`) and overwrites the four-byte
     /// mode marker at offset `0x30` with `0x6E556E49`
@@ -930,8 +930,8 @@ impl<'a> InnoInstaller<'a> {
     /// (`Setup.Install.HelperFunc.pas:469-473`). On launch the
     /// same EXE reads that marker (`Setup.Start.pas:148`) and
     /// dispatches into uninstaller mode rather than installer
-    /// mode. Both constants — `SetupExeModeOffset = $30` and
-    /// `SetupExeModeUninstaller = $6E556E49` — have been stable
+    /// mode. Both constants - `SetupExeModeOffset = $30` and
+    /// `SetupExeModeUninstaller = $6E556E49` - have been stable
     /// across the version range we cover (verified at `is-5_5_5`
     /// through `is-7_0_0_2`, `Shared.Struct.pas`).
     ///
@@ -984,7 +984,7 @@ impl<'a> InnoInstaller<'a> {
     /// Iteration order matches [`Self::files`] declaration order.
     /// When solid-LZMA mode places multiple files in the same
     /// chunk, the per-chunk `OnceLock` cache makes the second and
-    /// subsequent extractions from that chunk free — i.e. running
+    /// subsequent extractions from that chunk free - i.e. running
     /// the iterator end-to-end touches each chunk's decompression
     /// path exactly once even though there are many file
     /// extractions.
@@ -1003,7 +1003,7 @@ impl<'a> InnoInstaller<'a> {
     /// for plaintext installers / installers that haven't been
     /// unlocked.
     fn encryption_context(&self) -> Option<crate::extract::chunk::EncryptionContext<'_>> {
-        // Modern (6.4+) — derived 32-byte key + base nonce.
+        // Modern (6.4+) - derived 32-byte key + base nonce.
         if let (Some(key), Some(info)) = (self.encryption_key.as_ref(), self.encryption.as_ref()) {
             return Some(crate::extract::chunk::EncryptionContext::Modern {
                 key,
@@ -1011,7 +1011,7 @@ impl<'a> InnoInstaller<'a> {
                 mode: info.mode,
             });
         }
-        // Legacy (pre-6.4) — keep the password verbatim (per-chunk
+        // Legacy (pre-6.4) - keep the password verbatim (per-chunk
         // RC4 keys are derived from password + each chunk's salt).
         // 5.3.9..6.4 uses SHA-1 keying; pre-5.3.9 uses MD5.
         if let Some(password) = self.legacy_password.as_deref() {
@@ -1066,7 +1066,7 @@ impl<'a> InnoInstaller<'a> {
             compression,
             self.encryption_context().as_ref(),
         )?;
-        // If another thread raced ahead, `set` will fail — fall
+        // If another thread raced ahead, `set` will fail - fall
         // back to whatever value got installed.
         let bytes = match slot.set(bytes) {
             Ok(()) => slot.get().ok_or(Error::Truncated {
@@ -1183,7 +1183,7 @@ fn decompress_blocks_eufull(
 fn parse_architecture_expression(s: &str) -> HashSet<Architecture> {
     let lower = s.to_ascii_lowercase();
     let mut set = HashSet::new();
-    // Order doesn't matter — duplicate hits collapse in the set.
+    // Order doesn't matter - duplicate hits collapse in the set.
     let atoms: &[(&str, Architecture)] = &[
         ("x86compatible", Architecture::X86),
         ("x86os", Architecture::X86),
@@ -1213,11 +1213,11 @@ fn legacy_stored_hash(
     version: &Version,
 ) -> Option<LegacyStoredHash> {
     // The `shPassword` Options bit is the discriminator for
-    // pre-6.4 encryption — without it, the legacy hash fields are
+    // pre-6.4 encryption - without it, the legacy hash fields are
     // either absent or zero. Since options decoding is per-version
     // and exposed via header.has_option, we check via the parsed
     // tail's options bytes directly to avoid a dependency cycle.
-    // Easier: inspect the field availability — every encrypted
+    // Easier: inspect the field availability - every encrypted
     // pre-6.4 installer populates the relevant hash field per
     // its version family.
     match legacy_hash_family(version) {
@@ -1256,7 +1256,7 @@ fn try_passwords_legacy(
     Err(Error::WrongPassword)
 }
 
-/// `(chunk_cache, file_loc_to_chunk)` — return type of
+/// `(chunk_cache, file_loc_to_chunk)` - return type of
 /// [`build_chunk_index`]. Aliased here for clippy.
 type ChunkIndex = (Box<[OnceLock<Arc<[u8]>>]>, Box<[u32]>);
 

@@ -3,23 +3,23 @@
 //!
 //! Inno's `Setup.exe` registers ~200 functions / procedures that
 //! `[Code]` scripts can call. The canonical inventory lives in
-//! `research/issrc/Projects/Src/Shared.ScriptFunc.pas` —
+//! `research/issrc/Projects/Src/Shared.ScriptFunc.pas` -
 //! `ScriptFuncTables[sftScriptDlg]`, `[sftCommonFunc]`,
 //! `[sftPathFunc]`, `[sftInstall]`, `[sftInstFunc]`,
-//! `[sftMainFunc]`, etc. — plus the `DelphiScriptFuncTable` of
+//! `[sftMainFunc]`, etc. - plus the `DelphiScriptFuncTable` of
 //! pre-registered runtime helpers.
 //!
 //! This table covers the security-relevant subset analysts care
 //! about most: registry mutations, command execution, file
 //! operations, network downloads, and privilege checks. It is
-//! curated rather than exhaustive — adding remaining categories
+//! curated rather than exhaustive - adding remaining categories
 //! is mechanical (transcribe the names + write one-liner
 //! descriptions) and tracked separately. Lookups are by exact
 //! ASCII name, case-sensitive (PascalScript identifiers
 //! collide-detect on hash, but the wire form preserves the
 //! author's casing).
 
-/// One row of the lookup table — name + short, single-line
+/// One row of the lookup table - name + short, single-line
 /// description.
 type Row = (&'static str, &'static str);
 
@@ -104,7 +104,7 @@ pub const INNO_API: &[Row] = &[
     ),
     (
         "ShellExec",
-        "Wraps `ShellExecuteEx` — opens a file or URL via the shell's verb dispatcher.",
+        "Wraps `ShellExecuteEx` - opens a file or URL via the shell's verb dispatcher.",
     ),
     (
         "ShellExecAsOriginalUser",
@@ -159,11 +159,11 @@ pub const INNO_API: &[Row] = &[
     ),
     (
         "DownloadTemporaryFileSize",
-        "HEAD request — returns the Content-Length of a remote resource.",
+        "HEAD request - returns the Content-Length of a remote resource.",
     ),
     (
         "DownloadTemporaryFileDate",
-        "HEAD request — returns the Last-Modified header of a remote resource.",
+        "HEAD request - returns the Last-Modified header of a remote resource.",
     ),
     (
         "SetDownloadCredentials",
@@ -270,21 +270,21 @@ pub const INNO_API: &[Row] = &[
     ),
     (
         "WizardForm",
-        "Returns the running `TWizardForm` instance — exposes the live install UI.",
+        "Returns the running `TWizardForm` instance - exposes the live install UI.",
     ),
 ];
 
 /// Looks up `name` in [`INNO_API`] via binary search and returns
 /// the short description if found.
 ///
-/// Returns `None` for names not in the table — this includes both
+/// Returns `None` for names not in the table - this includes both
 /// genuinely-unknown imports and the long tail of registered
 /// helpers that aren't worth a description for analyst purposes
 /// (sorting, string-mangling, math, etc.).
 pub fn inno_api_description(name: &str) -> Option<&'static str> {
     // Lookup is **case-insensitive ASCII**. PascalScript hashes
     // identifiers via `MakeHash` (`uPSUtils.pas:701-708`), which
-    // is itself case-sensitive — but Inno's own registration path
+    // is itself case-sensitive - but Inno's own registration path
     // upper-cases names before they hit the wire, so a `[Code]`
     // import for `ShellExec` materializes as `SHELLEXEC`. The
     // table is hand-keyed mixed-case for readability; the

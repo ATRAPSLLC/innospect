@@ -10,7 +10,7 @@
 //! [ expected_crc32 (4) | stored_size (4) | compressed_flag (1) ]
 //! ```
 //!
-//! `expected_crc32` covers `stored_size` + `compressed_flag` only —
+//! `expected_crc32` covers `stored_size` + `compressed_flag` only -
 //! it is the integrity check on the *outer* header itself, not the
 //! payload. `compressed_flag == 0` ⇒ Stored. Otherwise: Zlib for
 //! `< 4.1.6`, LZMA1 for `≥ 4.1.6`.
@@ -65,12 +65,12 @@ const CHUNK_CRC_LEN: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BlockCompression {
-    /// `compressed_flag == 0` — sub-chunks are uncompressed.
+    /// `compressed_flag == 0` - sub-chunks are uncompressed.
     Stored,
-    /// `< 4.1.6` and `compressed_flag != 0` — Deflate stream after
+    /// `< 4.1.6` and `compressed_flag != 0` - Deflate stream after
     /// CRC stripping.
     Zlib,
-    /// `≥ 4.1.6` and `compressed_flag != 0` — LZMA1 stream with
+    /// `≥ 4.1.6` and `compressed_flag != 0` - LZMA1 stream with
     /// Inno's 5-byte properties header.
     Lzma1,
 }
@@ -84,7 +84,7 @@ pub struct DecompressedBlock {
     pub bytes: Box<[u8]>,
     /// Compression method that produced `bytes`.
     pub compression: BlockCompression,
-    /// Total bytes consumed from the input — outer header (9 bytes
+    /// Total bytes consumed from the input - outer header (9 bytes
     /// for ≥ 4.0.9, 12 for < 4.0.9) plus `stored_size`.
     pub consumed: usize,
 }
@@ -92,7 +92,7 @@ pub struct DecompressedBlock {
 /// Decompresses one block from `setup0[start..]`.
 ///
 /// `start` is the byte offset of the block within the (already-located)
-/// setup-0 region — i.e. where the outer header begins. The function
+/// setup-0 region - i.e. where the outer header begins. The function
 /// reads the outer header, validates its CRC, walks the inner 4 KiB
 /// CRC-framed sub-chunks, and feeds the concatenated compressed bytes
 /// to the appropriate decompressor.
@@ -204,7 +204,7 @@ fn parse_outer_header(
 
     if version.at_least(6, 7, 0) {
         // Inno Setup 6.7.0+ widened `TCompressedBlockHeader.StoredSize`
-        // from `Integer` (Int32) to `Int64` — see issrc commit
+        // from `Integer` (Int32) to `Int64` - see issrc commit
         // `8f02a4c0` (2025-11-26, "Update totals to Int64"). The
         // outer header is now 4 (CRC) + 8 (size) + 1 (flag) = 13
         // bytes; the CRC covers the trailing 9 bytes only.
@@ -220,7 +220,7 @@ fn parse_outer_header(
         let [s0, s1, s2, s3, s4, s5, s6, s7, flag] = header9;
         let stored_size_u64 = u64::from_le_bytes([s0, s1, s2, s3, s4, s5, s6, s7]);
         // Downstream still expects u32. Reject sizes ≥ 4 GiB rather
-        // than truncate silently — these would be pathological setup-0
+        // than truncate silently - these would be pathological setup-0
         // blocks (or adversarial input).
         let stored_size = u32::try_from(stored_size_u64).map_err(|_| Error::Overflow {
             what: "block stored_size > u32::MAX",
@@ -272,7 +272,7 @@ fn parse_outer_header(
             (compressed_size, BlockCompression::Zlib)
         };
         // Older path stores the 4 KiB CRC overhead *outside* the size
-        // figure — add it back so callers can locate the next block.
+        // figure - add it back so callers can locate the next block.
         // Compute `chunks = ceil(stored_size / CHUNK_SIZE)` =
         // `(stored_size + CHUNK_SIZE - 1) / CHUNK_SIZE` using
         // checked arithmetic.

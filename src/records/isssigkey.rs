@@ -1,4 +1,4 @@
-//! `TSetupISSigKeyEntry` — Inno Setup signing-key entry (6.5.0+).
+//! `TSetupISSigKeyEntry` - Inno Setup signing-key entry (6.5.0+).
 //!
 //! Pascal layout (`is-6_5_0:Projects/Src/Shared.Struct.pas` and
 //! identical at HEAD):
@@ -26,7 +26,7 @@ pub struct ISSigKeyEntry {
     pub public_x: String,
     /// Y-coordinate of the public key.
     pub public_y: String,
-    /// Runtime identifier — installer-side correlation token.
+    /// Runtime identifier - installer-side correlation token.
     pub runtime_id: String,
 }
 

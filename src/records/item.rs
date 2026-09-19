@@ -15,8 +15,8 @@
 //!
 //! Most records (file, ini, run, icon, registry, delete) read the
 //! conditions and the version range back-to-back. `directory_entry`
-//! is the known exception — it interposes `permissions` and
-//! `attributes` between the two — so the readers are split: callers
+//! is the known exception - it interposes `permissions` and
+//! `attributes` between the two - so the readers are split: callers
 //! that need the back-to-back form use `ItemBase::read`, callers
 //! that interpose use `ItemConditions::read` and
 //! `WindowsVersionRange::read` separately.
@@ -36,21 +36,21 @@ use crate::{
 /// Conditions section read by every record-with-conditions.
 ///
 /// All six fields are length-prefixed strings (UTF-16LE on Unicode
-/// builds, ANSI on legacy ones — codepage selection follows
+/// builds, ANSI on legacy ones - codepage selection follows
 /// `util::encoding::is_unicode_for_version`). Fields that
 /// don't yet exist in the parsed installer's version remain empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ItemConditions {
-    /// `Components:` directive — semicolon-separated list of
+    /// `Components:` directive - semicolon-separated list of
     /// component names this entry is gated on. Inno Setup 2.0+
     /// (or ISX 1.3.8+).
     pub components: String,
-    /// `Tasks:` directive — semicolon-separated list of task names
+    /// `Tasks:` directive - semicolon-separated list of task names
     /// this entry is gated on. Inno Setup 2.0+ (or ISX 1.3.17+).
     pub tasks: String,
     /// `Languages:` directive. Inno Setup 4.0.1+.
     pub languages: String,
-    /// `Check:` directive — Pascal expression / function name
+    /// `Check:` directive - Pascal expression / function name
     /// gating this entry. Inno Setup 4.0.0+ (or ISX 1.3.24+).
     pub check: String,
     /// `AfterInstall:` directive. Inno Setup 4.1.0+. Note: declared
@@ -102,7 +102,7 @@ impl ItemConditions {
 ///
 /// Convenience for record types whose Pascal layout reads
 /// `load_condition_data` and `load_version_data` consecutively
-/// (file / ini / run / icon / registry / delete entries — the
+/// (file / ini / run / icon / registry / delete entries - the
 /// majority). Record types that interpose fields between the two
 /// (currently only `directory_entry`) must read the parts
 /// separately.
@@ -110,7 +110,7 @@ impl ItemConditions {
 pub struct ItemBase {
     /// Conditions strings.
     pub conditions: ItemConditions,
-    /// Windows version range — `MinVersion` + `OnlyBelowVersion`.
+    /// Windows version range - `MinVersion` + `OnlyBelowVersion`.
     pub winver: WindowsVersionRange,
 }
 

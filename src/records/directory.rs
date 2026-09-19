@@ -1,4 +1,4 @@
-//! `TSetupDirEntry` — `[Dirs]` directive entry.
+//! `TSetupDirEntry` - `[Dirs]` directive entry.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!
@@ -54,7 +54,7 @@ stable_flag_enum!(DirectoryFlag, {
 /// Parsed `TSetupDirEntry`.
 #[derive(Clone, Debug)]
 pub struct DirectoryEntry {
-    /// `Name:` directive — directory path with Inno constants.
+    /// `Name:` directive - directory path with Inno constants.
     pub name: String,
     /// `[ItemConditions]`.
     pub conditions: ItemConditions,
@@ -63,7 +63,7 @@ pub struct DirectoryEntry {
     /// before the `[Permissions]` table was introduced). Empty
     /// outside that range.
     pub legacy_permissions: Vec<u8>,
-    /// `Attribs:` directive — Win32 file-attribute flags.
+    /// `Attribs:` directive - Win32 file-attribute flags.
     pub attributes: u32,
     /// `[WindowsVersionRange]`.
     pub winver: WindowsVersionRange,

@@ -1,4 +1,4 @@
-//! `TSetupDeleteEntry` — `[InstallDelete]` / `[UninstallDelete]`
+//! `TSetupDeleteEntry` - `[InstallDelete]` / `[UninstallDelete]`
 //! entry. The same struct is reused for both directives.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
@@ -21,15 +21,15 @@ use crate::{
     version::Version,
 };
 
-/// `TSetupDeleteType` — what the entry deletes.
+/// `TSetupDeleteType` - what the entry deletes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeleteTargetType {
-    /// `dtFiles` — file glob (no recursion).
+    /// `dtFiles` - file glob (no recursion).
     Files,
-    /// `dtFilesAndSubdirs` — file glob + recurse subdirectories.
+    /// `dtFilesAndSubdirs` - file glob + recurse subdirectories.
     FilesAndSubdirs,
-    /// `dtDirIfEmpty` — directory, only if empty.
+    /// `dtDirIfEmpty` - directory, only if empty.
     DirIfEmpty,
 }
 
@@ -42,7 +42,7 @@ stable_name_enum!(DeleteTargetType, {
 /// Parsed `TSetupDeleteEntry`.
 #[derive(Clone, Debug)]
 pub struct DeleteEntry {
-    /// `Name:` directive — file path / glob to delete (with Inno
+    /// `Name:` directive - file path / glob to delete (with Inno
     /// constants like `{app}` unresolved).
     pub name: String,
     /// Shared conditions + Windows version range.

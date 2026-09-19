@@ -1,4 +1,4 @@
-//! `TSetupFileEntry` — `[Files]` directive entry.
+//! `TSetupFileEntry` - `[Files]` directive entry.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!
@@ -39,11 +39,11 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FileEntryType {
-    /// `ftUserFile` — regular file from `[Files]`.
+    /// `ftUserFile` - regular file from `[Files]`.
     UserFile,
-    /// `ftUninstExe` — the uninstaller binary.
+    /// `ftUninstExe` - the uninstaller binary.
     UninstExe,
-    /// `ftRegSvrExe` — the embedded RegSvr (pre-5.0 win32 only).
+    /// `ftRegSvrExe` - the embedded RegSvr (pre-5.0 win32 only).
     RegSvrExe,
 }
 
@@ -92,9 +92,9 @@ pub enum FileFlag {
     SetNtfsCompression,
     UnsetNtfsCompression,
     GacInstall,
-    /// 6.5.0+ — file content fetched at install time.
+    /// 6.5.0+ - file content fetched at install time.
     Download,
-    /// 6.5.0+ — payload is a 7-Zip archive to extract.
+    /// 6.5.0+ - payload is a 7-Zip archive to extract.
     ExtractArchive,
 }
 
@@ -139,18 +139,18 @@ stable_flag_enum!(FileFlag, {
 /// Parsed `TSetupFileEntry`.
 #[derive(Clone, Debug)]
 pub struct FileEntry {
-    /// `Source:` directive — path on the build machine where the
+    /// `Source:` directive - path on the build machine where the
     /// file came from (with Inno constants like `{tmp}`).
     pub source: String,
-    /// `DestName:` directive — installation path.
+    /// `DestName:` directive - installation path.
     pub destination: String,
-    /// `FontInstall:` directive — empty unless this is a font.
+    /// `FontInstall:` directive - empty unless this is a font.
     pub install_font_name: String,
     /// `StrongAssemblyName:` directive (5.2.5+).
     pub strong_assembly_name: String,
     /// Shared conditions + Windows version range.
     pub item: ItemBase,
-    /// `Excludes:` directive (6.5.0+) — empty on older versions.
+    /// `Excludes:` directive (6.5.0+) - empty on older versions.
     pub excludes: String,
     /// `DownloadISSigSource:` directive (6.5.0+).
     pub download_iss_sig_source: String,
@@ -191,11 +191,11 @@ pub struct FileEntry {
     pub file_type_raw: u8,
 }
 
-/// `TSetupFileVerification` — added at Inno Setup 6.5.0. Holds the
+/// `TSetupFileVerification` - added at Inno Setup 6.5.0. Holds the
 /// signing-key allowlist and the file content hash.
 #[derive(Clone, Debug, Default)]
 pub struct FileVerification {
-    /// `ISSigAllowedKeys` — newline-separated list of allowed
+    /// `ISSigAllowedKeys` - newline-separated list of allowed
     /// signature keys (raw bytes; 6.5.0+).
     pub iss_sig_allowed_keys: Vec<u8>,
     /// SHA-256 of the file content. All zeros when verification
@@ -211,11 +211,11 @@ pub struct FileVerification {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FileVerificationKind {
-    /// `fvNone` — no verification.
+    /// `fvNone` - no verification.
     None,
-    /// `fvHash` — SHA-256 hash check.
+    /// `fvHash` - SHA-256 hash check.
     Hash,
-    /// `fvISSig` — Inno Setup signature check.
+    /// `fvISSig` - Inno Setup signature check.
     IsSig,
 }
 

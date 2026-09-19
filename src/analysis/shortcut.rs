@@ -3,7 +3,7 @@
 //!
 //! Inno's `[Icons]` directive declares shortcut metadata
 //! (`Filename:`, `Parameters:`, `WorkingDir:`, `IconFile:`) but
-//! doesn't itself materialize the binary the shortcut points at —
+//! doesn't itself materialize the binary the shortcut points at -
 //! that comes from a separate `[Files]` entry. For analyst code
 //! that wants to know "which executables in this installer get a
 //! shortcut?", the natural shape is the join.
@@ -24,7 +24,7 @@ pub struct Shortcut<'a> {
     /// The icon entry that defines the shortcut.
     pub icon: &'a IconEntry,
     /// The matched [`FileEntry`] whose `destination` equals
-    /// `icon.filename`, or `None` if no `[Files]` entry matches —
+    /// `icon.filename`, or `None` if no `[Files]` entry matches -
     /// e.g. system-path shortcuts (`{sys}\notepad.exe`), URLs, or
     /// shortcuts to files installed by an `[Code]` script.
     pub target: Option<&'a FileEntry>,

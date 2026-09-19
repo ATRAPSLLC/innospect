@@ -1,4 +1,4 @@
-//! `TSetupComponentEntry` — installable component definition.
+//! `TSetupComponentEntry` - installable component definition.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!
@@ -63,7 +63,7 @@ pub struct ComponentEntry {
     pub languages: String,
     /// `Check:` directive. 4.0.0+ (or ISX 1.3.24+).
     pub check: String,
-    /// `ExtraDiskSpaceRequired` — disk usage attributable to this
+    /// `ExtraDiskSpaceRequired` - disk usage attributable to this
     /// component beyond the file payload sum.
     pub extra_disk_space_required: i64,
     /// `Level:` directive (component priority). 4.0.0+ (or ISX 3.0.3+).
@@ -76,7 +76,7 @@ pub struct ComponentEntry {
     pub flags: HashSet<ComponentFlag>,
     /// Raw `Options` byte.
     pub options_raw: u8,
-    /// `Size` — total file size when this component is selected.
+    /// `Size` - total file size when this component is selected.
     /// `u64` from 4.0.0+; `u32`-promoted from earlier versions.
     pub size: u64,
 }

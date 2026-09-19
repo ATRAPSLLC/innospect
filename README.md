@@ -3,7 +3,7 @@
 A pure-Rust parser for [Inno Setup](https://jrsoftware.org/isinfo.php) installer
 binaries. Provides typed access to the loader stub overlay, setup headers, every
 typed record stream, and on-demand file extraction across Inno Setup 5.0 through
-the 7.x preview series — including the modern XChaCha20 / `euFiles` / `euFull`
+the 7.x preview series - including the modern XChaCha20 / `euFiles` / `euFull`
 encryption modes and the legacy ARC4 + SHA-1 / MD5 password-verifier path.
 
 Built for **malware analysis** and **reverse engineering**. The crate is
@@ -16,31 +16,31 @@ arithmetic-with-side-effects are all denied at the lib root.
 
 ## Features
 
-- **PE locator** — both the modern signature-scan path (5.1.5+) and the legacy
+- **PE locator** - both the modern signature-scan path (5.1.5+) and the legacy
   `0x30` file-offset pointer used by pre-5.1.5 installers; tolerates BlackBox /
   GOG re-packagers.
-- **Setup-0 decompression** — Stored / Zlib / LZMA1 / LZMA2 across every
+- **Setup-0 decompression** - Stored / Zlib / LZMA1 / LZMA2 across every
   documented version cutover, with the standalone-encryption-header path for
   6.5+ and the inline-verifier path for 6.4.x.
-- **Setup-1 file extraction** — solid-LZMA chunks with per-file BCJ inverse
+- **Setup-1 file extraction** - solid-LZMA chunks with per-file BCJ inverse
   filtering (4108 / 5200 / 5.3.9-flip variants) and SHA-256 / SHA-1 / MD5 /
   CRC-32 / Adler-32 checksum verification at EOF.
-- **Per-version `TSetupHeader`** — every `String` / `AnsiString` / count / tail
+- **Per-version `TSetupHeader`** - every `String` / `AnsiString` / count / tail
   field across the 1.x..7.x history, with `[Files]` / `[Run]` / `[Icons]` /
   `[Registry]` / `[INI]` / `[Components]` / `[Tasks]` / `[Types]` / `[Languages]`
   / `[CustomMessages]` / `[Permissions]` records typed individually.
-- **Encryption** — XChaCha20 with PBKDF2-SHA-256 key derivation (Inno 6.4+);
+- **Encryption** - XChaCha20 with PBKDF2-SHA-256 key derivation (Inno 6.4+);
   ARC4 with salted SHA-1 (5.3.9..6.4) or MD5 (4.2..5.3.9); CRC32 verifier
   (pre-4.2). Password trial via `from_bytes_with_passwords`.
-- **Embedded `[Code]` / IFPS** — re-exports the
+- **Embedded `[Code]` / IFPS** - re-exports the
   [`pascalscript`](https://crates.io/crates/pascalscript) container parser; the
   `inno_api_description` table maps Inno-runtime imports
   (`RegWriteStringValue`, `Exec`, `ShellExec`, …) to one-line summaries for
   triage.
-- **Analysis API** — `exec_commands()` / `registry_ops()` / `shortcuts()` walk
+- **Analysis API** - `exec_commands()` / `registry_ops()` / `shortcuts()` walk
   the relevant record streams and tag each entry with install-vs-uninstall
   phase, registry-write classification, or icon-target resolution.
-- **Uninstaller reconstruction** — `extract_uninstaller()` patches the loader
+- **Uninstaller reconstruction** - `extract_uninstaller()` patches the loader
   stub bytes back to the canonical `InUn` form.
 
 ## Quick start

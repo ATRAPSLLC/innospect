@@ -10,7 +10,7 @@
 //! fixed numeric tail of `TSetupHeader` and the per-record
 //! `ItemBase`. [`item`] is the conditions section + version-range
 //! bundle every record-with-conditions reads. The remaining modules
-//! map one-to-one to Pascal record types — lightweight ones
+//! map one-to-one to Pascal record types - lightweight ones
 //! ([`type_`], [`component`], [`task`], [`language`], [`message`],
 //! [`permission`]) and heavier ones ([`directory`], [`mod@file`],
 //! [`icon`], [`ini`], [`registry`], [`run`], [`delete`],

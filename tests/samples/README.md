@@ -48,7 +48,7 @@ curl -Lo tests/samples/imagemagick-setup.exe \
 Both have the post-5.1.5 `rDlPtS…` SetupLdr magic in the PE
 resource (`RESEARCH.md` §2.3).
 
-## Synthetic — plain (`plain/`)
+## Synthetic - plain (`plain/`)
 
 No encryption. Used by `plain_samples_parse_and_extract`, which
 asserts every sample parses cleanly, reports `is_encrypted() ==
@@ -68,7 +68,7 @@ and yields the canonical `payload.txt` via `extract_files()`.
 | `plain-tool6_3_0.exe`      | 6.3.0           | Last pre-architectures-string release         |
 | `plain-tool6_4_3.exe`      | 6.4.3           | First XChaCha20-era release                   |
 | `plain-tool6_5_2.exe`      | 6.5.2           | First standalone-encryption-header release    |
-| `plain-tool6_5_2-alt.exe`  | 6.5.2           | Same script, second build — nondeterminism check |
+| `plain-tool6_5_2-alt.exe`  | 6.5.2           | Same script, second build - nondeterminism check |
 | `plain-tool6_6_1.exe`      | 6.6.1           | Mid-range 6.x coverage                        |
 | `plain-tool7_0_0_1.exe`    | 7.0.0-preview-3 | Buggy-PBKDF2 marker `(7,0,0,1)` regression sample |
 
@@ -76,7 +76,7 @@ and yields the canonical `payload.txt` via `extract_files()`.
 produced encrypted variants. Rebuild with `-Tag is-6_7_0` (no
 `-WithFull` needed for the plain output) to fill it in.
 
-## Synthetic — encrypted (`encrypted/`)
+## Synthetic - encrypted (`encrypted/`)
 
 All share password **`test123`** and the canonical `payload.txt`
 (21 bytes, `Inno test payload v1\n`). Used by
@@ -103,12 +103,12 @@ All share password **`test123`** and the canonical `payload.txt`
 | `enc-files-tool6_3_0.exe`       | 6.3.0           | per-chunk | ARC4 + SHA-1 (last pre-6.4 ARC4 release)              |
 | `enc-files-tool6_4_3.exe`       | 6.4.3           | euFiles   | XChaCha20 / inline `PasswordTest` (PBKDF2)            |
 | `enc-files-tool6_5_2.exe`       | 6.5.2           | euFiles   | XChaCha20 / `TSetupEncryptionHeader`                  |
-| `enc-files-tool6_5_2-alt.exe`   | 6.5.2           | euFiles   | XChaCha20 — nondeterminism rebuild                    |
+| `enc-files-tool6_5_2-alt.exe`   | 6.5.2           | euFiles   | XChaCha20 - nondeterminism rebuild                    |
 | `enc-files-tool6_6_1.exe`       | 6.6.1           | euFiles   | XChaCha20                                             |
 | `enc-files-tool6_7_0.exe`       | 6.7.0           | euFiles   | XChaCha20                                             |
 | `enc-files-tool7_0_0_1.exe`     | 7.0.0-preview-3 | euFiles   | XChaCha20 with **buggy PBKDF2** (XOR'd `U_1`)         |
 | `enc-full-tool6_5_2.exe`        | 6.5.2           | euFull    | XChaCha20 / `sccCompressedBlocks1/2`                  |
-| `enc-full-tool6_5_2-alt.exe`    | 6.5.2           | euFull    | XChaCha20 — nondeterminism rebuild                    |
+| `enc-full-tool6_5_2-alt.exe`    | 6.5.2           | euFull    | XChaCha20 - nondeterminism rebuild                    |
 | `enc-full-tool6_6_1.exe`        | 6.6.1           | euFull    | XChaCha20                                             |
 | `enc-full-tool6_7_0.exe`        | 6.7.0           | euFull    | XChaCha20                                             |
 | `enc-full-tool7_0_0_1.exe`      | 7.0.0-preview-3 | euFull    | XChaCha20 with buggy PBKDF2                           |
@@ -121,7 +121,7 @@ legacy indicator lives in the setup-header `Options` bitset:
 
 ## Quarantine (`quarantine/`)
 
-Samples that successfully build but currently fail parse — each
+Samples that successfully build but currently fail parse - each
 pinpoints a specific format-coverage gap and serves as a
 regression fixture for the eventual fix. These are **not** walked
 by `plain_samples_parse_and_extract` /
@@ -129,7 +129,7 @@ by `plain_samples_parse_and_extract` /
 ToDo Stage 3 ladder lands, the matching pair moves back to
 `plain/` + `encrypted/`.
 
-No samples currently quarantined — every produced sample pair parses
+No samples currently quarantined - every produced sample pair parses
 and its `payload.txt` extracts cleanly. The pre-5.5 ladder
 (5.0.8..5.4.3) was promoted into `plain/` + `encrypted/` once the
 header parser learnt the per-version `String` / `AnsiString` field
@@ -139,7 +139,7 @@ pre-5.5.0 `TSetupHeaderOption` bit table (mirroring innoextract's
 
 ## Filename convention
 
-Outputs are named by `build-toolchain.ps1`'s slug — `Version` with
+Outputs are named by `build-toolchain.ps1`'s slug - `Version` with
 `.` replaced by `_`, optional `-alt` for nondeterminism rebuilds,
 `_ansi` for explicit pre-5.3 ANSI builds:
 
@@ -188,16 +188,16 @@ scp 'inno-build:inno-test/enc-full-tool*.exe'  tests/samples/encrypted/
 
 Versions and edge cases not yet in the matrix:
 
-- **Plain 6.7.0** — see note above; trivial rebuild.
-- **4.x** representative — needs older VC runtime on the host.
-- **3.x / 2.x / 1.5** — pre-4.0.9 setup-loader paths.
-- **16-bit 1.2.x** — pre-PE setup loader; needs a separate build
+- **Plain 6.7.0** - see note above; trivial rebuild.
+- **4.x** representative - needs older VC runtime on the host.
+- **3.x / 2.x / 1.5** - pre-4.0.9 setup-loader paths.
+- **16-bit 1.2.x** - pre-PE setup loader; needs a separate build
   script. Validates `BITS16` flag and `i1.2.10--16` legacy marker.
-- **ISX (`My Inno Setup Extensions ≤ 3.0.6.1`)** — validates
+- **ISX (`My Inno Setup Extensions ≤ 3.0.6.1`)** - validates
   `Variant::Isx` discrimination.
-- **Multi-slice** — `DiskSpanning=yes` + small `DiskSliceSize`,
+- **Multi-slice** - `DiskSpanning=yes` + small `DiskSliceSize`,
   unblocks the multi-slice extraction path.
-- **7.0.0.3+** — once a fix-bearing 7.x ISCC ships, validates
+- **7.0.0.3+** - once a fix-bearing 7.x ISCC ships, validates
   `CompiledCodeVersion` / `Bitness` claims and lets us replace the
   marker-keyed PBKDF2 gate with a `SetupBinVersion` check.
 

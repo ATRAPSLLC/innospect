@@ -4,16 +4,16 @@
 //! On-disk layout from `Shared.Struct.pas`:
 //!
 //! ```text
-//! TSetupVersionDataVersion = packed record   // 4 bytes — also used as `Cardinal`
+//! TSetupVersionDataVersion = packed record   // 4 bytes - also used as `Cardinal`
 //!     Build:  Word;                          //   u16_le (2)
 //!     Minor:  Byte;                          //   u8     (1)
 //!     Major:  Byte;                          //   u8     (1)
 //! end;
 //!
 //! TSetupVersionData = packed record          // 10 bytes
-//!     WinVersion:    Cardinal;               //   u32 (4) — same shape as the triple above
-//!     NTVersion:     Cardinal;               //   u32 (4) — likewise
-//!     NTServicePack: Word;                   //   u16 (2) — { minor: u8, major: u8 } on disk
+//!     WinVersion:    Cardinal;               //   u32 (4) - same shape as the triple above
+//!     NTVersion:     Cardinal;               //   u32 (4) - likewise
+//!     NTServicePack: Word;                   //   u16 (2) - { minor: u8, major: u8 } on disk
 //! end;
 //!
 //! windows_version_range = [ MinVersion (10) | OnlyBelowVersion (10) ]   // 20 bytes
@@ -29,11 +29,11 @@ use crate::{error::Error, util::read::Reader, version::Version};
 /// `TSetupVersionData` (4 bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowsVersion {
-    /// `Build` — minor build number (e.g. 19045 for Windows 10 22H2).
+    /// `Build` - minor build number (e.g. 19045 for Windows 10 22H2).
     pub build: u16,
-    /// `Minor` — Windows minor version.
+    /// `Minor` - Windows minor version.
     pub minor: u8,
-    /// `Major` — Windows major version.
+    /// `Major` - Windows major version.
     pub major: u8,
 }
 
@@ -62,7 +62,7 @@ impl WindowsVersion {
     }
 }
 
-/// `nt_service_pack` — major / minor service pack number.
+/// `nt_service_pack` - major / minor service pack number.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ServicePack {
     /// `NTServicePack.Minor`.
@@ -71,21 +71,21 @@ pub struct ServicePack {
     pub major: u8,
 }
 
-/// `TSetupEntryBitness` — Inno Setup 6.7.0+ replacement for the
+/// `TSetupEntryBitness` - Inno Setup 6.7.0+ replacement for the
 /// pre-6.7 `*32Bit` / `*64Bit` flag bits on file / registry / run
 /// entries. One byte on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Bitness {
-    /// `ebInstallDefault` — match the installer's default bitness.
+    /// `ebInstallDefault` - match the installer's default bitness.
     InstallDefault,
     /// `eb32Bit`.
     Bits32,
     /// `eb64Bit`.
     Bits64,
-    /// `ebNativeBit` — the native bitness of the running OS.
+    /// `ebNativeBit` - the native bitness of the running OS.
     Native,
-    /// `ebCurrentProcessBit` — the bitness of the currently-running
+    /// `ebCurrentProcessBit` - the bitness of the currently-running
     /// installer process.
     CurrentProcess,
 }
@@ -115,7 +115,7 @@ impl Bitness {
     }
 }
 
-/// Pascal `TSetupVersionData` — a target Windows version pinning the
+/// Pascal `TSetupVersionData` - a target Windows version pinning the
 /// underlying kernel + NT version + service pack. 10 bytes on disk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetWindows {

@@ -1,4 +1,4 @@
-//! `TSetupLanguageEntry` — `[Languages]` section entry.
+//! `TSetupLanguageEntry` - `[Languages]` section entry.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!
@@ -20,7 +20,7 @@
 //! ```
 //!
 //! Reader reference: `research/src/setup/language.cpp`. Note that
-//! "binary_string" in innoextract is a length-prefixed raw blob —
+//! "binary_string" in innoextract is a length-prefixed raw blob -
 //! always read as the wire bytes regardless of unicode build. We use
 //! `read_ansi_bytes` here.
 //!
@@ -47,7 +47,7 @@ use crate::{
 /// handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguageCodepage {
-    /// `cp_utf16le` — modern unicode builds.
+    /// `cp_utf16le` - modern unicode builds.
     Utf16Le,
     /// Numeric Windows codepage (e.g. 1252, 1251, 932). The variant
     /// covers every legacy ANSI installer; common values are
@@ -138,14 +138,14 @@ impl core::fmt::Display for LanguageCodepage {
 
 /// Parsed `TSetupLanguageEntry`.
 ///
-/// Strings are returned as raw bytes (`Vec<u8>`) — codepage decoding
+/// Strings are returned as raw bytes (`Vec<u8>`) - codepage decoding
 /// to `String` happens above this layer once a target encoding is
 /// chosen. The associated codepage is exposed via
 /// [`Self::codepage`]. For 6.x Unicode installers the bytes are
 /// UTF-16LE.
 #[derive(Clone, Debug)]
 pub struct LanguageEntry {
-    /// `Name:` directive — language identifier (e.g. `"english"`).
+    /// `Name:` directive - language identifier (e.g. `"english"`).
     /// 4.0.0+; absent on older versions.
     pub name: Vec<u8>,
     /// Human-readable language name (e.g. `"English"`).
@@ -236,7 +236,7 @@ fn read_v6_6(reader: &mut Reader<'_>, _version: &Version) -> Result<LanguageEntr
     let language_id_word = reader.u16_le("Language.LanguageId")?;
     let language_id = u32::from(language_id_word);
     // Codepage removed at 6.6.0; we synthesize UTF-16LE for unicode
-    // builds (which are all 5.6+ — and 6.6.0 is well past that).
+    // builds (which are all 5.6+ - and 6.6.0 is well past that).
     let codepage = LanguageCodepage::Utf16Le;
 
     let dialog_font_size = reader.u32_le("Language.DialogFontSize")?;
@@ -283,7 +283,7 @@ fn read_legacy(reader: &mut Reader<'_>, version: &Version) -> Result<LanguageEnt
 
     let language_name = read_ansi_bytes(reader, "Language.LanguageName")?;
 
-    // BlackBox 5.5.7.1 inserts an extra binary_string here — read
+    // BlackBox 5.5.7.1 inserts an extra binary_string here - read
     // it past as a no-op for that exact format-version.
     if version.at_least_4(5, 5, 7, 1) && !version.at_least_4(5, 5, 7, 2) {
         let _skip = read_ansi_bytes(reader, "Language.BlackBoxSkip")?;
@@ -346,7 +346,7 @@ fn read_legacy(reader: &mut Reader<'_>, version: &Version) -> Result<LanguageEnt
     let welcome_font_size = reader.u32_le("Language.WelcomeFontSize")?;
     let copyright_font_size = reader.u32_le("Language.CopyrightFontSize")?;
 
-    // BlackBox 5.5.7.1 trailing u32 — read past for that exact
+    // BlackBox 5.5.7.1 trailing u32 - read past for that exact
     // format-version only.
     if version.at_least_4(5, 5, 7, 1) && !version.at_least_4(5, 5, 7, 2) {
         let _ = reader.u32_le("Language.BlackBoxTail")?;

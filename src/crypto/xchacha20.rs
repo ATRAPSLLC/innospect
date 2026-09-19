@@ -30,11 +30,11 @@ pub(crate) type Nonce = [u8; 24];
 /// `SpecialFirstSlice = -1 - typ_index`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SpecialContext {
-    /// Verifier — `SpecialFirstSlice = -1`.
+    /// Verifier - `SpecialFirstSlice = -1`.
     PasswordTest,
-    /// `euFull` setup-0 first block — `SpecialFirstSlice = -2`.
+    /// `euFull` setup-0 first block - `SpecialFirstSlice = -2`.
     CompressedBlocks1,
-    /// `euFull` setup-0 second block — `SpecialFirstSlice = -3`.
+    /// `euFull` setup-0 second block - `SpecialFirstSlice = -3`.
     CompressedBlocks2,
 }
 
@@ -67,7 +67,7 @@ pub(crate) fn chunk_nonce(base: &Nonce, start_offset: u64, first_slice: i32) -> 
     let mut out = *base;
 
     // Bytes 0..7: i64 LE XOR with `start_offset` (Inno treats as
-    // signed Int64 — but XOR is bit-identical between the two).
+    // signed Int64 - but XOR is bit-identical between the two).
     let off_bytes = start_offset.to_le_bytes();
     for i in 0..8 {
         let Some(dst) = out.get_mut(i) else {
@@ -189,7 +189,7 @@ mod tests {
     /// XChaCha20 IETF reference test vector from
     /// <https://tools.ietf.org/id/draft-arciszewski-xchacha-03.html#rfc.appendix.A.3.2>.
     /// Note the nonce's LAST byte is `0x58` (not the natural
-    /// `0x57` sequence) — the draft's chosen nonce is
+    /// `0x57` sequence) - the draft's chosen nonce is
     /// `404142...5658`. Verbatim copy from the `chacha20` crate's
     /// own test (`tests/mod.rs::xchacha20::xchacha20_keystream`)
     /// so we get an end-to-end check that the bytes coming out of
