@@ -72,7 +72,7 @@ pub enum Error {
     /// uninstaller stub which doesn't carry payload bytes.
     NoLocation,
     /// The chunk is encrypted (`ChunkEncrypted` flag set on the
-    /// `DataEntry`) and no decryption key is available — typically
+    /// `DataEntry`) and no decryption key is available - typically
     /// because the caller didn't supply a password.
     Encrypted,
     /// The installer is encrypted but the candidate-password list
@@ -125,7 +125,7 @@ pub enum Error {
         actual: String,
     },
     /// Wrapper for a parse failure inside the embedded
-    /// PascalScript blob — surfaced through
+    /// PascalScript blob - surfaced through
     /// [`crate::InnoInstaller::compiledcode`]. The wrapped
     /// [`pascalscript::Error`] is fully self-contained;
     /// this variant exists so `innospect::Error` can be the single

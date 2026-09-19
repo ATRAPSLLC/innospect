@@ -12,8 +12,8 @@
 //!   determined elsewhere (per-installer or per-language).
 //!
 //! Modern Inno Setup is Unicode by default. The `(u)` / `(U)` suffix
-//! on the version marker is best treated as a hint, not a directive
-//! — see [`is_unicode_for_version`] for our decision logic.
+//! on the version marker is best treated as a hint, not a directive -
+//! see [`is_unicode_for_version`] for our decision logic.
 
 use crate::{error::Error, util::read::Reader, version::Version};
 
@@ -45,7 +45,7 @@ pub(crate) fn read_utf16_string(
     String::from_utf16(&units).map_err(|_| Error::InvalidUtf16 { what })
 }
 
-/// Reads a length-prefixed ANSI string (raw bytes — caller decodes
+/// Reads a length-prefixed ANSI string (raw bytes - caller decodes
 /// via the appropriate codepage if a `&str` is needed).
 ///
 /// # Errors
@@ -93,7 +93,7 @@ pub(crate) fn read_setup_string(
 /// The marker's `(u)` suffix is the most explicit signal but it is
 /// inconsistent in practice: HeidiSQL 6.4.0.1 ships an ANSI marker
 /// yet stores all strings as UTF-16LE. Inno Setup has been
-/// Unicode-by-default since 5.6 — we treat that as the rule and
+/// Unicode-by-default since 5.6 - we treat that as the rule and
 /// the marker `(u)` as an informational hint.
 pub(crate) fn is_unicode_for_version(version: &Version) -> bool {
     if version.is_unicode() {

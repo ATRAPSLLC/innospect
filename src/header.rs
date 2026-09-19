@@ -103,7 +103,7 @@ pub enum HeaderString {
     ChangesEnvironment,
     /// `ChangesAssociations` directive.
     ChangesAssociations,
-    /// `ArchitecturesAllowed` (added at 6.4 as a `String` — earlier
+    /// `ArchitecturesAllowed` (added at 6.4 as a `String` - earlier
     /// versions stored this as a packed enum-set in the fixed
     /// portion).
     ArchitecturesAllowed,
@@ -139,7 +139,7 @@ pub enum HeaderAnsi {
     InfoBeforeText,
     /// Info text shown after installation.
     InfoAfterText,
-    /// Compiled PascalScript bytecode blob — opaque from this
+    /// Compiled PascalScript bytecode blob - opaque from this
     /// crate's perspective; the IFPS container is not parsed.
     CompiledCodeText,
 }
@@ -165,7 +165,7 @@ pub struct EntryCounts {
     pub tasks: u32,
     /// `NumDirEntries`.
     pub directories: u32,
-    /// `NumISSigKeyEntries` — only present in Inno Setup 6.5.0+
+    /// `NumISSigKeyEntries` - only present in Inno Setup 6.5.0+
     /// (commit `ac2b262d`, ships in tag `is-6_5_0`).
     pub iss_sig_keys: Option<u32>,
     /// `NumFileEntries`.
@@ -189,7 +189,7 @@ pub struct EntryCounts {
     pub uninstall_run: u32,
 }
 
-/// `TSetupHeaderOption` — declared options bit. The numeric value of
+/// `TSetupHeaderOption` - declared options bit. The numeric value of
 /// each variant has no on-wire meaning; bit positions are
 /// version-dependent and resolved by [`SetupHeader::options`].
 ///
@@ -308,9 +308,9 @@ stable_flag_enum!(HeaderOption, {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WizardStyle {
-    /// `wsClassic` — classic Inno Setup wizard look.
+    /// `wsClassic` - classic Inno Setup wizard look.
     Classic,
-    /// `wsModern` — modern Inno Setup wizard look (Inno Setup 6+).
+    /// `wsModern` - modern Inno Setup wizard look (Inno Setup 6+).
     Modern,
 }
 
@@ -320,11 +320,11 @@ stable_name_enum!(WizardStyle, { Self::Classic => "classic", Self::Modern => "mo
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ImageAlphaFormat {
-    /// `afIgnored` — alpha channel ignored.
+    /// `afIgnored` - alpha channel ignored.
     Ignored,
-    /// `afDefined` — alpha defined but not premultiplied.
+    /// `afDefined` - alpha defined but not premultiplied.
     Defined,
-    /// `afPremultiplied` — alpha premultiplied.
+    /// `afPremultiplied` - alpha premultiplied.
     Premultiplied,
 }
 
@@ -338,11 +338,11 @@ stable_name_enum!(ImageAlphaFormat, {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UninstallLogMode {
-    /// `lmAppend` — append to existing log.
+    /// `lmAppend` - append to existing log.
     Append,
-    /// `lmNew` — create new log file.
+    /// `lmNew` - create new log file.
     New,
-    /// `lmOverwrite` — overwrite existing log.
+    /// `lmOverwrite` - overwrite existing log.
     Overwrite,
 }
 
@@ -381,17 +381,17 @@ pub enum YesNoAuto {
 
 stable_name_enum!(YesNoAuto, { Self::Yes => "yes", Self::No => "no", Self::Auto => "auto" });
 
-/// `TSetupPrivilegesRequired` — privilege level required to install.
+/// `TSetupPrivilegesRequired` - privilege level required to install.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PrivilegesRequired {
-    /// `prNone` — no special privileges.
+    /// `prNone` - no special privileges.
     None,
-    /// `prPowerUser` — power-user (legacy).
+    /// `prPowerUser` - power-user (legacy).
     PowerUser,
-    /// `prAdmin` — administrator privileges.
+    /// `prAdmin` - administrator privileges.
     Admin,
-    /// `prLowest` — lowest available privileges (5.7.0+).
+    /// `prLowest` - lowest available privileges (5.7.0+).
     Lowest,
 }
 
@@ -420,7 +420,7 @@ stable_name_enum!(LanguageDetectionMethod, {
     Self::None => "none",
 });
 
-/// `TSetupCompressMethod` — compression method for `setup-1` chunks
+/// `TSetupCompressMethod` - compression method for `setup-1` chunks
 /// (note: distinct from the `setup-0` block compression discovered at
 /// runtime via [`crate::Compression`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,7 +460,7 @@ stable_name_enum!(CompressMethod, {
 /// `Arm32` is reachable only via the 6.4+ string-expression form
 /// (`arm32compatible`); the pre-6.4 packed-set wire format had no
 /// bit position for it. The [`crate::InnoInstaller::architecture`]
-/// accessor unifies both forms — see its docs for the parsing
+/// accessor unifies both forms - see its docs for the parsing
 /// semantics.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
@@ -506,11 +506,11 @@ pub enum PrivilegesRequiredOverride {
 /// [`HashSet`]-decoded form and the raw bytes.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderTail {
-    /// `CompiledCodeVersion` — the compiler's `SetupBinVersion`
+    /// `CompiledCodeVersion` - the compiler's `SetupBinVersion`
     /// constant, written into the header at 7.0.0.3 and later (issrc
     /// commit `f9095e91`, 2026-04-15). The low 31 bits are a packed
-    /// `(major,minor,patch,build)` quad — same layout as
-    /// [`crate::Version::a`]/`b`/`c`/`d` — and bit 31 is set when
+    /// `(major,minor,patch,build)` quad - same layout as
+    /// [`crate::Version::a`]/`b`/`c`/`d` - and bit 31 is set when
     /// the producing compiler ran in 64-bit mode.
     ///
     /// `None` for every release older than 7.0.0.3, including the
@@ -525,13 +525,13 @@ pub struct HeaderTail {
     pub windows_version_range: WindowsVersionRange,
 
     // --- pre-6.4 wizard colors ---
-    /// `BackColor` — wizard background (pre-6.4 only).
+    /// `BackColor` - wizard background (pre-6.4 only).
     pub back_color: Option<u32>,
-    /// `BackColor2` — wizard background gradient (pre-6.4 only).
+    /// `BackColor2` - wizard background gradient (pre-6.4 only).
     pub back_color2: Option<u32>,
 
     // --- wizard layout ---
-    /// `WizardStyle` — `Classic` or `Modern`. Raw byte preserved as
+    /// `WizardStyle` - `Classic` or `Modern`. Raw byte preserved as
     /// `wizard_style_raw` for forward-compatibility.
     pub wizard_style: Option<WizardStyle>,
     /// Raw `WizardStyle` byte as read.
@@ -554,7 +554,7 @@ pub struct HeaderTail {
     pub legacy_password_crc32: Option<u32>,
     /// `PasswordSalt`: 8 bytes for 4.2.2..6.3.x.
     pub legacy_password_salt: Option<[u8; 8]>,
-    /// `PasswordTest` (PBKDF2-SHA256-XChaCha20 verifier; 6.4.x only —
+    /// `PasswordTest` (PBKDF2-SHA256-XChaCha20 verifier; 6.4.x only -
     /// at 6.5.0 this moved into [`crate::EncryptionInfo`]).
     pub password_test: Option<u32>,
     /// `EncryptionKDFSalt` (16 bytes; 6.4.x only).
@@ -629,7 +629,7 @@ pub struct HeaderTail {
 
     // --- options bitset ---
     /// Decoded `Options` set with version-mapped bit positions.
-    /// Unrecognized bits are dropped silently — the raw bytes remain
+    /// Unrecognized bits are dropped silently - the raw bytes remain
     /// available via [`Self::options_raw`].
     pub options: HashSet<HeaderOption>,
     /// Raw `Options` bitfield bytes.
@@ -676,7 +676,7 @@ impl SetupHeader {
         // bytes). Present for non-Unicode installers from 2.0.6 onward;
         // removed at 6.3.0 when the ANSI build was dropped (innoextract
         // `setup/header.cpp:283-287`; research-notes/10-version-evolution.md
-        // §B.2.b "LeadBytes"). Read past — not yet exposed.
+        // §B.2.b "LeadBytes"). Read past - not yet exposed.
         if version.at_least(2, 0, 6) && !version.at_least(6, 3, 0) && !version.is_unicode() {
             reader.skip(32, "LeadBytes")?;
         }
@@ -786,7 +786,7 @@ impl SetupHeader {
 /// The on-disk shape evolves field-by-field across the entire 1.x..7.x
 /// history. `SECompressedBlockRead` (`Shared.SetupEntFunc.pas`) serializes
 /// `TSetupHeader` by walking every `String` field first, then every
-/// `AnsiString` field — so the string table is always contiguous and the
+/// `AnsiString` field - so the string table is always contiguous and the
 /// ansi blobs always trail it. Any `String` field added in a later release
 /// therefore reads *before* the ansi tail even when its version gate is
 /// higher; see the `CloseApplicationsFilterExcludes` note below. Three
@@ -800,7 +800,7 @@ impl SetupHeader {
 ///    `DefaultUserInfoSerial` for the compiled-code blob); 5.2.5+
 ///    moved them to the tail, after the whole string table.
 /// 2. `UninstallerSignature` is a `String` field that exists only in
-///    the narrow 5.2.1..5.3.10 window — read past, not exposed.
+///    the narrow 5.2.1..5.3.10 window - read past, not exposed.
 /// 3. The `String` fields added at 6.4.3+ (`CloseApplicationsFilterExcludes`,
 ///    `SevenZipLibraryName`, `UsePrevious*`) come after the architecture
 ///    expressions but still ahead of the ansi tail. innoextract's reference
@@ -940,14 +940,14 @@ fn read_header_strings_and_ansi(
         put_str(reader, HeaderString::UsePreviousTasks, strings)?;
         put_str(reader, HeaderString::UsePreviousUserInfo, strings)?;
     }
-    // 5.2.5+: license/info blobs — the first three `AnsiString` fields,
+    // 5.2.5+: license/info blobs - the first three `AnsiString` fields,
     // read after the entire string table (see note above).
     if version.at_least(5, 2, 5) {
         put_ansi(reader, HeaderAnsi::LicenseText, ansi)?;
         put_ansi(reader, HeaderAnsi::InfoBeforeText, ansi)?;
         put_ansi(reader, HeaderAnsi::InfoAfterText, ansi)?;
     }
-    // 5.2.1..5.3.10: UninstallerSignature String — read past. This narrow
+    // 5.2.1..5.3.10: UninstallerSignature String - read past. This narrow
     // legacy window predates the 5.2.5 tail move, so in that era the ansi
     // blobs are interleaved and the signature lands between InfoAfter and
     // CompiledCode; every version in the window is < 6.4.3, so the string
@@ -955,7 +955,7 @@ fn read_header_strings_and_ansi(
     if version.at_least(5, 2, 1) && !version.at_least(5, 3, 10) {
         let _ = read_setup_string(reader, version, "UninstallerSignature")?;
     }
-    // 5.2.5+: compiled-code blob — the fourth `AnsiString` field.
+    // 5.2.5+: compiled-code blob - the fourth `AnsiString` field.
     if version.at_least(5, 2, 5) {
         put_ansi(reader, HeaderAnsi::CompiledCodeText, ansi)?;
     }
@@ -1083,7 +1083,7 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
     // 6.0+ wizard layout (Inno Setup 6 introduced WizardStyle and
     // resize percentages). At 6.6.0 `WizardStyle` was renamed
     // `WizardDarkStyle` (different enum semantics, same byte slot)
-    // — kept under `wizard_style_raw` for both eras since the
+    // - kept under `wizard_style_raw` for both eras since the
     // typed `WizardStyle::Classic`/`Modern` mapping no longer
     // applies. Also at 6.6.0 the field is moved to AFTER
     // wizard_size_percent_*; we follow the per-version order
@@ -1149,8 +1149,8 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
     // Inline encryption metadata. Three layouts:
     //   - 6.4.0..6.5.0: PasswordTest (4) + KDF salt (16) + iter (4) + nonce (24)
     //   - 5.3.9..6.4.0: SHA1 (20) + 8-byte salt
-    //   - 4.2.0..5.3.9: MD5 (16) + (4.2.2+) 8-byte salt — not exposed
-    //   - <4.2.0:       CRC32 (4) — not exposed
+    //   - 4.2.0..5.3.9: MD5 (16) + (4.2.2+) 8-byte salt - not exposed
+    //   - <4.2.0:       CRC32 (4) - not exposed
     //   - 6.5.0+:       moved to TSetupEncryptionHeader; nothing here.
     if version.at_least(6, 5, 0) {
         // No inline encryption fields.
@@ -1211,7 +1211,7 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
     }
 
     // 3.0.0..3.0.3 has a u8 (auto-no-yes) for AlwaysRestart vs
-    // RestartIfNeededByRun — encoded in Options on later versions.
+    // RestartIfNeededByRun - encoded in Options on later versions.
     if version.at_least(3, 0, 0) && !version.at_least(3, 0, 3) {
         let _val = reader.u8("RestartMode")?;
     }
@@ -1273,7 +1273,7 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         tail.architectures_install_in_64bit_mode = Some(decode_arch_set_v0(&raw));
     }
 
-    // 5.2.1..5.3.10 has signed-uninstaller fields — read past.
+    // 5.2.1..5.3.10 has signed-uninstaller fields - read past.
     if version.at_least(5, 2, 1) && !version.at_least(5, 3, 10) {
         let _sz = reader.u32_le("SignedUninstallerOriginalSize")?;
         let _crc = reader.u32_le("SignedUninstallerHeaderChecksum")?;
@@ -1509,7 +1509,7 @@ fn options_bit_count(version: &Version) -> usize {
 fn decode_options(raw: &[u8], version: &Version) -> HashSet<HeaderOption> {
     let mut out = HashSet::new();
     if version.at_least(5, 5, 0) {
-        // 5.5.0+ uses one of the curated static slot tables — preferred
+        // 5.5.0+ uses one of the curated static slot tables - preferred
         // because the bit positions are stable and easy to audit.
         for (i, slot) in static_options_bit_table(version).iter().enumerate() {
             if bit_at(raw, i)
@@ -1551,7 +1551,7 @@ fn static_options_bit_table(version: &Version) -> &'static [Option<HeaderOption>
         // 5.5.7..6.0.0. Ordering mirrors innoextract `header::load_flags`
         // for that range. The ANSI build adds `ShowUndisplayableLanguages`
         // at bit 39; Unicode builds skip that bit and shift the tail down
-        // by one. We model the ANSI variant — bits 0..38 are identical
+        // by one. We model the ANSI variant - bits 0..38 are identical
         // for both, which covers the Password (bit 10) and
         // EncryptionUsed (bit 37) lookups callers actually care about.
         OPTIONS_V5_5_7
@@ -1711,8 +1711,8 @@ fn dynamic_options_bit_table(version: &Version) -> Vec<Option<HeaderOption>> {
     if version.at_least(5, 3, 9) {
         t.push(Some(HeaderOption::DisableWelcomePage));
     }
-    // 5.5.0+ slots are unreachable here — the static tables cover that
-    // range — but include them for symmetry with `options_bit_count`.
+    // 5.5.0+ slots are unreachable here - the static tables cover that
+    // range - but include them for symmetry with `options_bit_count`.
     if version.at_least(5, 5, 0) {
         t.push(Some(HeaderOption::CloseApplications));
         t.push(Some(HeaderOption::RestartApplications));
@@ -1785,7 +1785,7 @@ const OPTIONS_V5_5_0: &[Option<HeaderOption>] = &[
 ];
 
 /// 5.5.7..6.0.0 ANSI flag bit table. Ordering follows innoextract
-/// `setup/header.cpp:569-733` (`header::load_flags`) — every
+/// `setup/header.cpp:569-733` (`header::load_flags`) - every
 /// `flagreader.add(...)` call that's gated on a version range
 /// covering 5.5.7 contributes one bit slot in declaration order.
 const OPTIONS_V5_5_7: &[Option<HeaderOption>] = &[
@@ -1892,7 +1892,7 @@ const OPTIONS_V6_1: &[Option<HeaderOption>] = &[
     Some(HeaderOption::WizardResizable),
 ];
 
-/// 6.3.0..6.4.0 — same shape as `OPTIONS_V6_1` plus `UninstallLogging`
+/// 6.3.0..6.4.0 - same shape as `OPTIONS_V6_1` plus `UninstallLogging`
 /// at slot 48 (innoextract `header.cpp:729-731`). 49 bits → 7 bytes
 /// on wire.
 const OPTIONS_V6_3: &[Option<HeaderOption>] = &[
@@ -2147,7 +2147,7 @@ mod tests {
     /// script has a `[Code]` section) landed in the UTF-16 decode and failed
     /// with "invalid UTF-16LE in CloseApplicationsFilterExcludes". The
     /// synthetic sample installers have no `[Code]` section, so every tail
-    /// field is empty and the misordering stayed invisible to them — hence
+    /// field is empty and the misordering stayed invisible to them - hence
     /// this byte-level fixture with a deliberately non-empty, odd-length
     /// compiled-code blob (odd length is never valid UTF-16, so a regression
     /// re-surfaces as the exact original error rather than a silent shift).
@@ -2161,7 +2161,7 @@ mod tests {
         for _ in 0..32 {
             push_utf16(&mut buf, "");
         }
-        // Field 33: CloseApplicationsFilterExcludes — a real string.
+        // Field 33: CloseApplicationsFilterExcludes - a real string.
         push_utf16(&mut buf, "notepad.exe,calc.exe");
         // AnsiString tail: License / InfoBefore / InfoAfter / CompiledCode.
         push_ansi(&mut buf, b"LICENSE TEXT");

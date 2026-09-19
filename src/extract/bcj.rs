@@ -26,12 +26,12 @@ use crate::error::Error;
 /// + version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filter {
-    /// Pre-5.2.0 — `inno_exe_decoder_4108`, byte-by-byte CALL/JMP
+    /// Pre-5.2.0 - `inno_exe_decoder_4108`, byte-by-byte CALL/JMP
     /// address rewrite.
     V4108,
-    /// 5.2.0..5.3.9 — `inno_exe_decoder_5200` without high-byte flip.
+    /// 5.2.0..5.3.9 - `inno_exe_decoder_5200` without high-byte flip.
     V5200,
-    /// 5.3.9+ — `inno_exe_decoder_5200` with high-byte flip.
+    /// 5.3.9+ - `inno_exe_decoder_5200` with high-byte flip.
     V5_3_9,
 }
 
@@ -51,7 +51,7 @@ impl Filter {
     }
 
     /// Applies the inverse filter to `buf` in place. The whole file
-    /// content must be passed in one call — internal state is
+    /// content must be passed in one call - internal state is
     /// initialised at the start and not preserved across calls.
     ///
     /// # Errors
@@ -93,7 +93,7 @@ fn apply_4108(buf: &mut [u8]) -> Result<(), Error> {
             }
         } else {
             addr = addr.wrapping_add(u32::from(byte));
-            // Cast cannot truncate meaningfully — we want the low byte.
+            // Cast cannot truncate meaningfully - we want the low byte.
             #[allow(clippy::cast_possible_truncation)]
             {
                 emit = addr as u8;

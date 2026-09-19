@@ -30,7 +30,7 @@ Source: "payload.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Exercise `RunEntry::read` on the wire. The fields are format-affecting
 ; per version (`Run.OnLog` added at SetupBinVersion 7.0.0.1, `Run.Bitness`
-; cutoff change) — having any [Run]/[UninstallRun] entry forces the
+; cutoff change) - having any [Run]/[UninstallRun] entry forces the
 ; decoder to walk those bytes on every rebuilt sample.
 [Run]
 Filename: "{cmd}"; Parameters: "/c echo Inno test run"; Flags: runhidden

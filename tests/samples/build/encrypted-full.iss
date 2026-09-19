@@ -1,9 +1,9 @@
-; euFull sample — `Encryption=full` directive available 6.5.0+.
+; euFull sample - `Encryption=full` directive available 6.5.0+.
 ; Produces an installer where the setup-0 stream itself is
 ; XChaCha20-encrypted (sccCompressedBlocks1/2 contexts), in
 ; addition to the per-chunk encryption.
 ;
-; **Skip on Inno Setup < 6.5** — the directive doesn't exist
+; **Skip on Inno Setup < 6.5** - the directive doesn't exist
 ; there and ISCC will reject the script.
 ;
 ; Build: ISCC.exe encrypted-full.iss
@@ -28,7 +28,7 @@ Encryption=full
 [Files]
 Source: "payload.txt"; DestDir: "{app}"; Flags: ignoreversion
 
-; See encrypted.iss for the rationale — every rebuild needs at least one
+; See encrypted.iss for the rationale - every rebuild needs at least one
 ; [Run]/[UninstallRun] entry to exercise `RunEntry::read` (Run.OnLog,
 ; Run.Bitness cutoffs).
 [Run]

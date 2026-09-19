@@ -1,4 +1,4 @@
-//! [`FileReader`] — streaming `std::io::Read` for one extracted
+//! [`FileReader`] - streaming `std::io::Read` for one extracted
 //! file's content.
 //!
 //! Pipeline (per `research/src/stream/file.cpp`):
@@ -18,7 +18,7 @@
 //!   caller's `Read::read` buffer
 //! ```
 //!
-//! BCJ runs on the **whole file** before the first `read` call —
+//! BCJ runs on the **whole file** before the first `read` call -
 //! we copy the slice into an owned buffer (so we can mutate it in
 //! place) and apply the filter once. Streaming `read` then drains
 //! that buffer, feeding the hasher incrementally and verifying at

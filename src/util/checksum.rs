@@ -3,14 +3,14 @@
 //!
 //! Inno Setup uses both CRC32 (most modern paths) and Adler32 (some
 //! legacy `exe_checksum` fields) over various small structures. This
-//! module provides simple one-shot helpers — sufficient for the
+//! module provides simple one-shot helpers - sufficient for the
 //! offset-table and block-header checks; per-chunk content checksums
 //! flow through the `crypto/` module instead.
 
 /// CRC32 of `data` using the IEEE 802.3 polynomial.
 ///
 /// Computed via a precomputed 256-entry table (built at compile time
-/// inside this crate) — fast enough for the offset-table and block
+/// inside this crate) - fast enough for the offset-table and block
 /// header / sub-chunk checks without pulling in an extra dependency.
 pub(crate) fn crc32(data: &[u8]) -> u32 {
     crc32_finalize(crc32_update(crc32_init(), data))

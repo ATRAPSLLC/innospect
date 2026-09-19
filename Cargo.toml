@@ -1,6 +1,6 @@
 [package]
 name = "innospect"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.88"
 description = "Parse and inspect Inno Setup installer binaries"
@@ -28,11 +28,11 @@ arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
 
 [dependencies]
-bitflags = "2.13.0"
+bitflags = "2.13.2"
 goblin = "0.10.7"
-encoding_rs = "0.8.35"
-codepage = "0.1.2"
-flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
+encoding_rs = "0.8.41"
+codepage = "0.1.3"
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization"] }
 bzip2 = "0.6.1"
 sha1 = "0.11.0"
@@ -40,8 +40,8 @@ sha2 = "0.11.0"
 md-5 = "0.11.0"
 pbkdf2 = { version = "0.13.0", default-features = false }
 hmac = "0.13.0"
-chacha20 = { version = "0.10.1", features = ["xchacha"] }
-pascalscript = "0.1.2"
+chacha20 = { version = "0.10.2", features = ["xchacha"] }
+pascalscript = "0.1.3"
 
 [dev-dependencies]
 lzma-rs = "0.3"

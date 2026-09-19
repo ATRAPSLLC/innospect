@@ -1,4 +1,4 @@
-//! `TSetupRegistryEntry` — `[Registry]` directive entry.
+//! `TSetupRegistryEntry` - `[Registry]` directive entry.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!

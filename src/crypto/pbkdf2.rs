@@ -7,7 +7,7 @@
 //! `research-notes/08-issrc-encryption.md` §D.
 //!
 //! The Pascal `String → bytes` conversion for the password is
-//! **UTF-16LE** (no BOM, no NUL terminator) — Delphi 2009+ uses
+//! **UTF-16LE** (no BOM, no NUL terminator) - Delphi 2009+ uses
 //! `UnicodeString` and `StringToBytes` does a raw `Move` of the
 //! `WideChar` array (`SizeOf(S[1]) = 2`). Failing to encode this
 //! way is a silent password-mismatch on every candidate.
@@ -37,10 +37,10 @@ pub(crate) fn password_bytes_utf16le(password: &str) -> Vec<u8> {
 /// security tweak that did `var F := U; FillChar(U[0], ...)`,
 /// which (because Delphi dynamic arrays don't copy on assign)
 /// zeroed `F` along with `U` after the first iteration's
-/// `U := NewU`. Net effect for a single-block (L=1) key — which
+/// `U := NewU`. Net effect for a single-block (L=1) key - which
 /// is every Inno verifier and chunk key, since
 /// `TSetupEncryptionKey` is 32 bytes and SHA-256's HashSize is
-/// also 32 — is that the result is missing one XOR'd term:
+/// also 32 - is that the result is missing one XOR'd term:
 /// `result = U_1 XOR U_2 XOR ... XOR U_N` becomes
 /// `result = U_2 XOR ... XOR U_N`. Equivalently:
 /// `result_buggy = result_standard XOR U_1`.
@@ -48,7 +48,7 @@ pub(crate) fn password_bytes_utf16le(password: &str) -> Vec<u8> {
 /// Fixed in commit `90f06e4d` (2026-04-21, post `is-7_0_0_2`).
 /// Apply this helper only when the installer's SetupBinVersion
 /// matches preview-3 (marker `(7.0.0.1)` and SetupBinVersion
-/// 7.0.0.2 — they coexist because `is-7_0_0_2` did not bump
+/// 7.0.0.2 - they coexist because `is-7_0_0_2` did not bump
 /// `SetupID`).
 pub(crate) fn derive_key_buggy_700_preview3(
     password: &str,
@@ -104,7 +104,7 @@ mod tests {
     /// PBKDF2-HMAC-SHA256 reference vector (RFC 7914-derived;
     /// matches Python's `hashlib.pbkdf2_hmac('sha256', ...)`).
     /// Note: our `derive_key` UTF-16LE-encodes the password, so we
-    /// can't use it directly for the raw RFC vector — that test
+    /// can't use it directly for the raw RFC vector - that test
     /// goes through the lower-level `pbkdf2` crate API directly.
     #[test]
     fn raw_pbkdf2_sha256_one_iteration_matches_python() {
@@ -147,7 +147,7 @@ mod tests {
         // (re-verifiable via `python3 -c` if needed)
         let salt = [0u8; 16];
         let key = derive_key("test123", &salt, 1);
-        // Round-trip through our `pbkdf2` call — the UTF-16LE
+        // Round-trip through our `pbkdf2` call - the UTF-16LE
         // encoding here is `74 00 65 00 73 00 74 00 31 00 32 00 33 00`.
         let mut expected = [0u8; 32];
         let pwd_utf16: Vec<u8> = "test123"

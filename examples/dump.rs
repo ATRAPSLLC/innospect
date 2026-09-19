@@ -173,7 +173,7 @@ fn main() {
 
     println!();
     println!(
-        "== Records (3c lightweight) — languages={} messages={} permissions={} types={} components={} tasks={} ==",
+        "== Records (3c lightweight) - languages={} messages={} permissions={} types={} components={} tasks={} ==",
         installer.languages().len(),
         installer.messages().len(),
         installer.permissions().len(),
@@ -204,7 +204,7 @@ fn main() {
 
     println!();
     println!(
-        "== Records (3d heavy) — dirs={} files={} icons={} ini={} reg={} ins_del={} unins_del={} run={} unins_run={} file_loc={} ==",
+        "== Records (3d heavy) - dirs={} files={} icons={} ini={} reg={} ins_del={} unins_del={} run={} unins_run={} file_loc={} ==",
         installer.directories().len(),
         installer.files().len(),
         installer.icons().len(),

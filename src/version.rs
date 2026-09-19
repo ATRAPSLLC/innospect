@@ -223,7 +223,7 @@ fn parse_modern(marker: &[u8; 64], prefix: &[u8], extra_flags: VersionFlags) -> 
 }
 
 fn parse_dotted(s: &[u8]) -> Option<(u8, u8, u8, u8)> {
-    // Drop a trailing `a` qualifier — innoextract observes this on
+    // Drop a trailing `a` qualifier - innoextract observes this on
     // some pre-release Inno Setup builds (e.g. `5.5.7a`). It does not
     // affect binary layout, so we discard it.
     let core = match s.last().copied() {

@@ -31,21 +31,21 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SetupLdrFamily {
-    /// `rDlPtS02\x87eVx` — Inno Setup ≥ 1.2.10.
+    /// `rDlPtS02\x87eVx` - Inno Setup ≥ 1.2.10.
     V1_2_10,
-    /// `rDlPtS04\x87eVx` — Inno Setup ≥ 4.0.0.
+    /// `rDlPtS04\x87eVx` - Inno Setup ≥ 4.0.0.
     V4_0_0,
-    /// `rDlPtS05\x87eVx` — Inno Setup ≥ 4.0.3.
+    /// `rDlPtS05\x87eVx` - Inno Setup ≥ 4.0.3.
     V4_0_3,
-    /// `rDlPtS06\x87eVx` — Inno Setup ≥ 4.0.10.
+    /// `rDlPtS06\x87eVx` - Inno Setup ≥ 4.0.10.
     V4_0_10,
-    /// `rDlPtS07\x87eVx` — Inno Setup ≥ 4.1.6.
+    /// `rDlPtS07\x87eVx` - Inno Setup ≥ 4.1.6.
     V4_1_6,
-    /// `rDlPtS\xCD\xE6\xD7{\x0B*` — Inno Setup ≥ 5.1.5; this magic is
+    /// `rDlPtS\xCD\xE6\xD7{\x0B*` - Inno Setup ≥ 5.1.5; this magic is
     /// also reused by 6.x and 7.x. The record-format generation is
     /// then determined by the `Version` field (v1 vs v2).
     V5_1_5,
-    /// `nS5W7dT\x83\xAA\x1B\x0Fj` — alternative 5.1.5+ magic seen on
+    /// `nS5W7dT\x83\xAA\x1B\x0Fj` - alternative 5.1.5+ magic seen on
     /// some modified variants.
     V5_1_5Alt,
 }
@@ -225,7 +225,7 @@ impl OffsetTable {
             _ => {
                 // Some pre-bumped 5.1.5 builds emit the v1 layout
                 // without an explicit version dword. We fall back to
-                // legacy parsing — the magic is enough to identify the
+                // legacy parsing - the magic is enough to identify the
                 // file. Rewind 4 bytes so the legacy parser sees the
                 // u32 we just consumed.
                 let pos_after = reader.pos();

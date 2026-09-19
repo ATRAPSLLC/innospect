@@ -7,7 +7,7 @@
 //! in a separate crate because:
 //!
 //! - The algorithm is tiny and trivially auditable.
-//! - It's only used for legacy chunk decryption — no other crate
+//! - It's only used for legacy chunk decryption - no other crate
 //!   in our dep graph wants it.
 //! - Innoextract takes the same approach (`research/src/crypto/arc4.cpp`).
 //!
@@ -64,13 +64,13 @@ impl Rc4 {
 
     /// Advances the keystream by `n` bytes without applying them
     /// to any buffer. Inno's pre-6.4 chunk decryption discards the
-    /// first 1000 bytes of the keystream after KSA — biased early
+    /// first 1000 bytes of the keystream after KSA - biased early
     /// bytes were the WEP attack surface, and ISCrypt.dll mirrors
     /// the standard RC4-drop hardening (`research/src/stream/chunk.cpp:72`,
     /// `arc4.discard(1000)`). Skipping the discard produces a
     /// keystream that XORs cleanly through password verification
     /// (which doesn't use the chunk RC4) but yields garbage at the
-    /// chunk-decrypt step — observable as malformed LZMA streams.
+    /// chunk-decrypt step - observable as malformed LZMA streams.
     pub(crate) fn discard(&mut self, n: usize) {
         for _ in 0..n {
             self.i = self.i.wrapping_add(1);

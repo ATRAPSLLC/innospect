@@ -1,4 +1,4 @@
-//! `TSetupPermissionEntry` — opaque permissions blob.
+//! `TSetupPermissionEntry` - opaque permissions blob.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!

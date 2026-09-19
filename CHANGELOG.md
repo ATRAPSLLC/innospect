@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-09-18
+
+### Changed
+
+- LZMA1 and LZMA2 decoding now uses `lzma-rust2` instead of `lzma-rs` (about 1.4x faster
+  on LZMA1, still pure Rust), and `flate2` uses the `zlib-rs` backend instead of
+  `miniz_oxide`. The LZMA2 dictionary size is taken from the property byte Inno writes
+  ahead of each chunk, so installers built with large dictionaries (for example
+  `lzma2/ultra64`) decode correctly. `lzma-rs` remains a dev-dependency for test fixtures.
+  Contributed by @maboloshi in #3.
+- Replaced em-dashes and en-dashes with plain ASCII hyphens throughout rustdoc comments,
+  the README, and test-sample notes, so generated documentation renders consistently.
+  This also touches a few runtime strings: the one-line summaries returned by
+  `inno_api_description` and the section banners printed by the `dump` example.
+- Raised the `pascalscript` minimum to 0.1.3 (documentation-only release upstream).
+- Refreshed dependencies and raised the manifest minimums to the current releases:
+  `bitflags` 2.13.2, `chacha20` 0.10.2, `codepage` 0.1.3, `encoding_rs` 0.8.41,
+  `flate2` 1.1.10.
+- Updated CI and publish workflows from `actions/checkout@v4` to `actions/checkout@v7`.
+- UTF-16LE decoding now pairs bytes with `as_chunks::<2>()` instead of `chunks_exact(2)`
+  plus a slice copy, which clears the new `chunks_exact_to_as_chunks` lint on current
+  stable Clippy. Also dropped a test import that newer compilers report as unused.
+
 ## [0.1.3] - 2026-08-09
 
 ### Fixed
@@ -58,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial published release.
 
+[0.1.4]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ATRAPSLLC/innospect/releases/tag/v0.1.1

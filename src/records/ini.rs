@@ -1,4 +1,4 @@
-//! `TSetupIniEntry` — `[INI]` directive entry.
+//! `TSetupIniEntry` - `[INI]` directive entry.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
 //!
@@ -12,7 +12,7 @@
 //! ```
 //!
 //! Reader reference: `research/src/setup/ini.cpp`. innoextract
-//! defaults `inifile` to `{windows}/WIN.INI` when empty — we surface
+//! defaults `inifile` to `{windows}/WIN.INI` when empty - we surface
 //! the field as-stored and let the caller apply that fallback.
 
 use std::collections::HashSet;
@@ -47,13 +47,13 @@ stable_flag_enum!(IniFlag, {
 /// Parsed `TSetupIniEntry`.
 #[derive(Clone, Debug)]
 pub struct IniEntry {
-    /// `Filename:` directive — path of the `.ini` file.
+    /// `Filename:` directive - path of the `.ini` file.
     pub inifile: String,
     /// `Section:` directive.
     pub section: String,
     /// `Key:` directive.
     pub key: String,
-    /// `String:` directive — value to write (when [`IniFlag::HasValue`]
+    /// `String:` directive - value to write (when [`IniFlag::HasValue`]
     /// is set).
     pub value: String,
     /// Shared conditions + Windows version range.

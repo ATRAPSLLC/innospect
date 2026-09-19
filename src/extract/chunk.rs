@@ -1,7 +1,7 @@
 //! Chunk reader: takes a `(first_slice, start_offset)` pair and
 //! returns the **decompressed** bytes for that chunk.
 //!
-//! Chunks are deduplicated by `(first_slice, start_offset)` —
+//! Chunks are deduplicated by `(first_slice, start_offset)` -
 //! multiple `FileLocation` entries can point at the same compressed
 //! chunk (solid LZMA mode is the common case). The
 //! [`crate::installer::InnoInstaller`] holds one
@@ -40,7 +40,7 @@ use crate::{
 
 /// Encryption parameters threaded through chunk decompression.
 /// Two variants distinguish the modern (6.4+ XChaCha20) and the
-/// legacy (pre-6.4 ARC4) paths — they have different key
+/// legacy (pre-6.4 ARC4) paths - they have different key
 /// derivation, different on-disk chunk layouts (legacy has an
 /// 8-byte per-chunk salt prefix), and obviously different ciphers.
 pub(crate) enum EncryptionContext<'a> {
@@ -61,7 +61,7 @@ pub(crate) enum EncryptionContext<'a> {
     /// MD5 (pre-5.3.9). The 8-byte salt sits inside the chunk
     /// body, just after the `zlb\x1a` magic. `password_bytes` is
     /// UTF-16LE for Unicode builds and Windows-1252 for ANSI
-    /// builds — innoextract picks the codepage in `info::get_key`
+    /// builds - innoextract picks the codepage in `info::get_key`
     /// (`research/src/setup/info.cpp:322-352`).
     Legacy {
         password: &'a str,
@@ -110,7 +110,7 @@ pub(crate) fn decompress_chunk(
 
     // Read magic + payload from setup-1.
     // `chunk_compressed_size` is the size of the encrypted +
-    // compressed body — it does NOT include the 4-byte magic.
+    // compressed body - it does NOT include the 4-byte magic.
     // The legacy ARC4 path additionally has an 8-byte per-chunk
     // salt sitting between the magic and the body, which is
     // OUTSIDE `chunk_compressed_size` (matches innoextract
@@ -145,7 +145,7 @@ pub(crate) fn decompress_chunk(
 
     // Decrypt in place when applicable (we copy the body to an
     // owned buffer so we can mutate it). For plaintext chunks the
-    // borrow stays — we only allocate when encryption forces us to.
+    // borrow stays - we only allocate when encryption forces us to.
     let owned_body: Vec<u8>;
     let compressed: &[u8] = if chunk_is_encrypted {
         let ctx = encryption.ok_or(Error::Encrypted)?;
@@ -199,7 +199,7 @@ pub(crate) fn decompress_chunk(
     // Allocate `original_size`-sized output up front. We don't have
     // an explicit decompressed size on the wire; the caller knows
     // the sum-of-files-in-this-chunk (from data entries that share
-    // it) but doesn't pre-aggregate that — let the decompressor
+    // it) but doesn't pre-aggregate that - let the decompressor
     // grow as needed.
     let mut out = Vec::<u8>::new();
 
@@ -210,7 +210,7 @@ pub(crate) fn decompress_chunk(
         CompressMethod::Zlib => {
             // Inno's Zlib chunks use the raw deflate stream (no
             // zlib wrapper). innoextract uses
-            // `boost::iostreams::zlib_decompressor` — we use
+            // `boost::iostreams::zlib_decompressor` - we use
             // flate2's `ZlibDecoder` first and fall back to
             // `DeflateDecoder` if a sample later proves the wrapper
             // is absent.
@@ -288,7 +288,7 @@ mod tests {
     ///
     /// 1. Take a known plaintext payload.
     /// 2. Compress it via Inno's LZMA1 wrap (5-byte properties +
-    ///    LZMA1 stream — same as the setup-0 outer block).
+    ///    LZMA1 stream - same as the setup-0 outer block).
     /// 3. Pick a per-chunk salt; derive RC4 key via the
     ///    `chunk_salt || password_utf16le` rule.
     /// 4. RC4-encrypt the compressed body.

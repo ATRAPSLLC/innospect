@@ -1,4 +1,4 @@
-//! `TSetupRunEntry` — `[Run]` / `[UninstallRun]` directive entry.
+//! `TSetupRunEntry` - `[Run]` / `[UninstallRun]` directive entry.
 //! The same struct serves both directives.
 //!
 //! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
@@ -26,7 +26,7 @@ use crate::{
     version::Version,
 };
 
-/// `TSetupRunWait` — how to wait for the launched process.
+/// `TSetupRunWait` - how to wait for the launched process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunWait {
@@ -91,7 +91,7 @@ pub struct RunEntry {
     pub run_once_id: String,
     /// `StatusMsg:` directive (2.0.2+).
     pub status_message: String,
-    /// `Verb:` directive — ShellExecute verb (5.1.13+).
+    /// `Verb:` directive - ShellExecute verb (5.1.13+).
     pub verb: String,
     /// `Description:` directive (2.0.0+ or any ISX).
     pub description: String,
@@ -147,7 +147,7 @@ impl RunEntry {
         };
 
         // Format 7.0.0+ inlined `OnLog` between Description and the
-        // condition strings (issrc commit `5a0ee1d4`, 2026-03-02 —
+        // condition strings (issrc commit `5a0ee1d4`, 2026-03-02 -
         // the same commit that bumped SetupID to `7.0.0.x`).
         let on_log = if version.at_least(7, 0, 0) {
             read_setup_string(reader, version, "Run.OnLog")?

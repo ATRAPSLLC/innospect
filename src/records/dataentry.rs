@@ -1,4 +1,4 @@
-//! `TSetupFileLocationEntry` (innoextract `dataentry`) — the
+//! `TSetupFileLocationEntry` (innoextract `dataentry`) - the
 //! contents of the **second** decompressed block (a.k.a. block 2).
 //! Each entry is the bookkeeping for one chunk of `setup-1` payload:
 //! offsets, size, checksum, timestamp, version info, encryption /
@@ -32,15 +32,15 @@ use crate::{error::Error, util::read::Reader, version::Version};
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DataChecksum {
-    /// `Adler32` — pre-4.0.1 only.
+    /// `Adler32` - pre-4.0.1 only.
     Adler32(u32),
-    /// `CRC32` — 4.0.1..4.2.0.
+    /// `CRC32` - 4.0.1..4.2.0.
     Crc32(u32),
-    /// `MD5` — 4.2.0..5.3.9.
+    /// `MD5` - 4.2.0..5.3.9.
     Md5([u8; 16]),
-    /// `SHA1` — 5.3.9..6.4.0.
+    /// `SHA1` - 5.3.9..6.4.0.
     Sha1([u8; 20]),
-    /// `SHA256` — 6.4.0+.
+    /// `SHA256` - 6.4.0+.
     Sha256([u8; 32]),
 }
 
@@ -87,7 +87,7 @@ stable_flag_enum!(DataFlag, {
     SignOnce => "sign_once",
 });
 
-/// `TSetupFileLocationSignMode` — 6.3.0+ replacement for the
+/// `TSetupFileLocationSignMode` - 6.3.0+ replacement for the
 /// per-entry `Sign` / `SignOnce` flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -112,20 +112,20 @@ stable_name_enum!(SignMode, {
 /// Parsed `TSetupFileLocationEntry`.
 #[derive(Clone, Debug)]
 pub struct DataEntry {
-    /// `FirstSlice` — index of the first slice (`setup-1.bin`,
+    /// `FirstSlice` - index of the first slice (`setup-1.bin`,
     /// `setup-2.bin`, …) this chunk belongs to.
     pub first_slice: u32,
-    /// `LastSlice` — index of the last slice this chunk belongs to.
+    /// `LastSlice` - index of the last slice this chunk belongs to.
     pub last_slice: u32,
-    /// `StartOffset` — byte offset within `FirstSlice`.
+    /// `StartOffset` - byte offset within `FirstSlice`.
     pub start_offset: u32,
-    /// `ChunkSubOffset` — byte offset within the (possibly
+    /// `ChunkSubOffset` - byte offset within the (possibly
     /// compressed/encrypted) chunk where this file's bytes begin.
     /// `0` for pre-4.0.1 versions.
     pub chunk_sub_offset: u64,
-    /// `OriginalSize` — uncompressed size of this file.
+    /// `OriginalSize` - uncompressed size of this file.
     pub original_size: u64,
-    /// `ChunkCompressedSize` — compressed-on-disk size of the chunk
+    /// `ChunkCompressedSize` - compressed-on-disk size of the chunk
     /// (note: a chunk may contain *multiple* file payloads).
     pub chunk_compressed_size: u64,
     /// File-content checksum.
@@ -140,7 +140,7 @@ pub struct DataEntry {
     pub flags: HashSet<DataFlag>,
     /// Raw `Flags` bytes.
     pub flags_raw: Vec<u8>,
-    /// `SignMode` — 6.3.0+. Synthesized from `Sign` / `SignOnce`
+    /// `SignMode` - 6.3.0+. Synthesized from `Sign` / `SignOnce`
     /// flags on older versions.
     pub sign_mode: SignMode,
     /// Raw sign-mode byte (only meaningful 6.3.0+).
@@ -171,7 +171,7 @@ impl DataEntry {
         }
 
         let start_offset = if version.at_least(6, 5, 2) {
-            // Promoted to Int64 at 6.5.2 (issrc commit `b5881a9b` —
+            // Promoted to Int64 at 6.5.2 (issrc commit `b5881a9b` -
             // "Increase max Setup size without disk spanning from
             // almost 2 GB to almost 4 GB"; widens StartOffset and
             // ChunkSuboffset to Int64). Wire is signed but
