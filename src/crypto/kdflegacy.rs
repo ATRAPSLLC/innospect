@@ -184,8 +184,6 @@ pub(crate) fn checksum_label(c: &DataChecksum) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use sha1::Digest as _;
-
     use super::*;
 
     fn v(a: u8, b: u8, c: u8) -> crate::version::Version {

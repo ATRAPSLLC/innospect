@@ -39,10 +39,8 @@ pub(crate) fn read_utf16_string(
     let bytes = reader.take(len_bytes, what)?;
     let pairs = len_bytes.checked_div(2).ok_or(Error::Overflow { what })?;
     let mut units = Vec::with_capacity(pairs);
-    for chunk in bytes.chunks_exact(2) {
-        let mut arr = [0u8; 2];
-        arr.copy_from_slice(chunk);
-        units.push(u16::from_le_bytes(arr));
+    for pair in bytes.as_chunks::<2>().0 {
+        units.push(u16::from_le_bytes(*pair));
     }
     String::from_utf16(&units).map_err(|_| Error::InvalidUtf16 { what })
 }
