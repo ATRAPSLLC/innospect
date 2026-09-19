@@ -342,8 +342,10 @@ fn format_le_u64(bytes: &[u8]) -> String {
 
 fn decode_utf16le_lossy(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .filter_map(|chunk| <[u8; 2]>::try_from(chunk).ok().map(u16::from_le_bytes))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect();
     String::from_utf16_lossy(&units)
 }

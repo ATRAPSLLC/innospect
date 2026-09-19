@@ -385,10 +385,8 @@ fn decode_utf16le(bytes: &[u8]) -> Option<String> {
         return None;
     }
     let mut units = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        let mut arr = [0u8; 2];
-        arr.copy_from_slice(chunk);
-        units.push(u16::from_le_bytes(arr));
+    for pair in bytes.as_chunks::<2>().0 {
+        units.push(u16::from_le_bytes(*pair));
     }
     String::from_utf16(&units).ok()
 }
