@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-26
+
+### Changed
+
+- **Breaking:** raised `pascalscript` to 0.2.0. innospect re-exports it as
+  `innospect::pascalscript`, so its API changes reach callers of this crate:
+  `ProcDisasm::branch_target()` / `branch_targets()` are removed
+  (`Instruction::branch_targets()` now returns every branch form in IFPS-blob
+  coordinates), `FlagGoto`'s field is renamed `offset`, and
+  `SetStackPointerToCopy` is now `SetStackPointerToCopy { dest, src }`. The release
+  also fixes the decoding of `cm_spc` (any procedure containing it failed to decode)
+  and the coordinates of `flaggoto` and the exception-handler sections, and adds
+  procedure signatures, stack maps and operand accessors. See the `pascalscript`
+  changelog for details.
+- Raised `lzma-rust2` from 0.18 to 0.21 (no source changes needed; drops the
+  `multiversion` transitive dependency) and `encoding_rs` to 0.8.42.
+
+### Tests
+
+- Every fixture is now built from a script in `tests/samples/build/` by the official
+  Inno Setup compilers running under Wine in Docker (`build-wine.sh`, with the compiler
+  matrix in `versions.txt`), replacing the Windows build host and its PowerShell
+  toolchain. Rebuilt this way, 34 of the 35 existing fixtures parse identically; the
+  35th, `enc-full-tool6_7_0.exe`, had been built from an older `encrypted-full.iss` and
+  is rebuilt from the current one.
+- The third-party HeidiSQL and ImageMagick installers are replaced by `full.iss`, built
+  with Inno Setup 6.4.0 and 6.1.0 to cover the same formats and compression layouts.
+  Every value the tests assert is stated in the script or its payload, so the
+  assertions are now exact rather than lower bounds.
+- Added `code.iss` (`code-tool6_4_3.exe`), a compiled `[Code]` script, with tests that
+  every script branch lands on an instruction of its own procedure and every
+  procedure's stack frame matches its declaration.
+- The fixtures are committed, and a missing one now fails the integration tests instead
+  of skipping them. The new `every_matrix_fixture_is_present` test derives the expected
+  set from `versions.txt` and fails on any fixture that is missing or not in the matrix,
+  and the encrypted walker requires both euFiles and euFull samples.
+
 ## [0.1.4] - 2026-09-18
 
 ### Changed
@@ -81,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial published release.
 
+[0.2.0]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ATRAPSLLC/innospect/compare/v0.1.1...v0.1.2

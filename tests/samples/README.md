@@ -1,27 +1,34 @@
 # Test samples
 
-Real-world and synthetic Inno Setup installers used as parser
-fixtures by `tests/integration.rs`. Binaries are **not checked in**
-(`Cargo.toml` `exclude`, `.gitignore`); fetch the public ones with
-the commands below and rebuild the synthetic ones from
-[`build/`](build/) on the Windows host.
+Inno Setup installers used as parser fixtures by
+`tests/integration.rs`, every one built here from a script in
+[`build/`](build/) by the official compilers, run under Wine. They are
+committed, so CI runs on them; nothing here is third-party, so there is
+nothing to redistribute. They are left out of the published crate
+(`Cargo.toml` `exclude`). `build/build-wine.sh --all` rebuilds them all
+(see [Building](#building)).
 
 ## Layout
 
 ```
 tests/samples/
-├── heidisql-setup.exe          # real-world, fetched
-├── imagemagick-setup.exe       # real-world, fetched
 ├── plain/                      # synthetic, no encryption
 ├── encrypted/                  # synthetic, password = "test123"
 │   └── payload.txt             # canonical 21-byte fixture
+├── full/                       # synthetic, every record stream
+├── code/                       # synthetic, a compiled [Code] script
 ├── quarantine/                 # samples that reveal known parser gaps
-└── build/                      # build-toolchain + .iss sources
-    ├── build-toolchain.ps1
-    ├── uninstall-inno.ps1
+└── build/                      # the compiler image + .iss sources
+    ├── build-wine.sh           # builds fixtures under Wine, in Docker
+    ├── versions.txt            # the compiler matrix
+    ├── Dockerfile
+    ├── install-inno.sh
     ├── plain.iss
     ├── encrypted.iss
     ├── encrypted-full.iss
+    ├── full.iss
+    ├── full/                   # full.iss's payload
+    ├── code.iss
     └── payload.txt
 ```
 
@@ -30,23 +37,35 @@ identical in [`build/`](build/) and [`encrypted/`](encrypted/);
 `encrypted/payload.txt` is the canonical fixture the integration
 test asserts against post-decrypt.
 
-## Real-world samples (top-level)
+## Synthetic - every record stream (`full/`)
 
-| File                    | Inno marker                          | SetupLdr family                            | Source |
-| ----------------------- | ------------------------------------ | ------------------------------------------ | ------ |
-| `heidisql-setup.exe`    | `Inno Setup Setup Data (6.4.0.1)`    | `72446c507453cde6d77b0b2a` (5.1.5+ family) | HeidiSQL 12.17 release |
-| `imagemagick-setup.exe` | `Inno Setup Setup Data (6.1.0) (u)`  | `72446c507453cde6d77b0b2a` (5.1.5+ family) | ImageMagick 7.1.2-21   |
+What the suite once read from third-party installers (HeidiSQL,
+ImageMagick), stated in a script instead, so every value a test asserts
+is in [`build/full.iss`](build/full.iss) or its payload
+[`build/full/`](build/full/): six languages including non-Latin
+codepages, custom messages, a license, tasks, icons that resolve to an
+installed file, registry writes under HKCR, HKCU and HKLM, a post-install
+launcher and an `isreadme` viewer, and a compiled script importing the
+Inno API. Built with the two compilers whose formats those installers
+exercised, each with that installer's compression layout:
 
-```bash
-curl -Lo tests/samples/heidisql-setup.exe \
-  https://github.com/HeidiSQL/HeidiSQL/releases/download/12.17/HeidiSQL_12.17.0.7270_Setup.exe
+| File                   | Inno marker                          | Layout |
+| ---------------------- | ------------------------------------ | ------ |
+| `full-tool6_4_0.exe`   | `Inno Setup Setup Data (6.4.0.1)`    | LZMA2, one solid chunk; SHA-256 checksums; `x64compatible` as a header string |
+| `full-tool6_1_0.exe`   | `Inno Setup Setup Data (6.1.0) (u)`  | LZMA1, one chunk per file, the executable through the x86 filter; SHA-1 checksums; packed architecture sets and back colours in the fixed tail |
 
-curl -Lo tests/samples/imagemagick-setup.exe \
-  https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-21/ImageMagick-7.1.2-21-Q16-HDRI-x86-static.exe
-```
+## Synthetic - compiled script (`code/`)
 
-Both have the post-5.1.5 `rDlPtS…` SetupLdr magic in the PE
-resource (`RESEARCH.md` §2.3).
+A `[Code]` section with one routine per construct a PascalScript
+consumer has to model: arithmetic on parameters and locals, a `var`
+parameter, a global written in a callee, every comparison, `for`,
+`while` and `case`, record fields and static and dynamic arrays,
+`try`/`finally` and `try`/`except` with a raise, strings, the Inno
+API and a DLL import. See [`build/code.iss`](build/code.iss).
+
+| File                   | Inno version | Notes |
+| ---------------------- | ------------ | ----- |
+| `code-tool6_4_3.exe`   | 6.4.3        | 9 internal procedures, 2 `try` blocks |
 
 ## Synthetic - plain (`plain/`)
 
@@ -70,11 +89,8 @@ and yields the canonical `payload.txt` via `extract_files()`.
 | `plain-tool6_5_2.exe`      | 6.5.2           | First standalone-encryption-header release    |
 | `plain-tool6_5_2-alt.exe`  | 6.5.2           | Same script, second build - nondeterminism check |
 | `plain-tool6_6_1.exe`      | 6.6.1           | Mid-range 6.x coverage                        |
+| `plain-tool6_7_0.exe`      | 6.7.0           | Latest 6.x                                    |
 | `plain-tool7_0_0_1.exe`    | 7.0.0-preview-3 | Buggy-PBKDF2 marker `(7,0,0,1)` regression sample |
-
-**Gap:** no `plain-tool6_7_0.exe`. The 6.7.0 toolchain run only
-produced encrypted variants. Rebuild with `-Tag is-6_7_0` (no
-`-WithFull` needed for the plain output) to fill it in.
 
 ## Synthetic - encrypted (`encrypted/`)
 
@@ -139,57 +155,49 @@ pre-5.5.0 `TSetupHeaderOption` bit table (mirroring innoextract's
 
 ## Filename convention
 
-Outputs are named by `build-toolchain.ps1`'s slug - `Version` with
-`.` replaced by `_`, optional `-alt` for nondeterminism rebuilds,
-`_ansi` for explicit pre-5.3 ANSI builds:
+Outputs are named by their `versions.txt` slug - the version with
+`.` replaced by `_` - with `-alt` for nondeterminism rebuilds:
 
 ```
-plain-tool<slug>[-alt|_ansi].exe
-enc-files-tool<slug>[-alt|_ansi].exe   # euFiles (or pre-6.5 ARC4 chunk-encrypt)
-enc-full-tool<slug>[-alt|_ansi].exe    # euFull, 6.5+ only (-WithFull)
+plain-tool<slug>[-alt].exe
+enc-files-tool<slug>[-alt].exe   # euFiles (or pre-6.5 ARC4 chunk-encrypt)
+enc-full-tool<slug>[-alt].exe    # euFull, 6.5+ only
+<script>-tool<slug>.exe          # anything else, in <script>/
 ```
 
-## Building (Windows host)
+## Building
 
-The single source of truth is
-[`build/build-toolchain.ps1`](build/build-toolchain.ps1), which
-uninstalls every existing Inno Setup, fetches the requested
-version, installs it, locates `ISCC.exe` via the registry entry
-whose `DisplayVersion` matches, and builds `plain.iss` +
-`encrypted.iss` (+ `encrypted-full.iss` when `-WithFull` is set).
-
-```powershell
-# On the Windows sample-build host, in %USERPROFILE%\inno-test\:
-.\build-toolchain.ps1 -Version 5.5.7  -Tag is-5_5_7
-.\build-toolchain.ps1 -Version 6.0.0  -Tag is-6_0_0
-.\build-toolchain.ps1 -Version 6.3.0  -Tag is-6_3_0
-.\build-toolchain.ps1 -Version 6.4.3  -Tag is-6_4_3
-.\build-toolchain.ps1 -Version 6.5.2  -Tag is-6_5_2 -WithFull
-.\build-toolchain.ps1 -Version 6.6.1  -Tag is-6_6_1 -WithFull
-.\build-toolchain.ps1 -Version 6.7.0  -Tag is-6_7_0 -WithFull
-.\build-toolchain.ps1 -Version 7.0.0  -Tag is-7_0_0 -WithFull
-```
-
-Outputs land alongside the script as `plain-tool<slug>.exe`,
-`enc-files-tool<slug>.exe`, and (with `-WithFull`)
-`enc-full-tool<slug>.exe`.
-
-### Transferring outputs back
+[`build/build-wine.sh`](build/build-wine.sh) runs the official
+compilers under Wine in a Docker image ([`build/Dockerfile`](build/Dockerfile)),
+with `build/` bind-mounted, and files each output where the tests
+look for it:
 
 ```bash
-# From the dev workstation, with the build host's SSH config aliased
-# (e.g. as `inno-build`):
-scp 'inno-build:inno-test/plain-tool*.exe'    tests/samples/plain/
-scp 'inno-build:inno-test/enc-files-tool*.exe' tests/samples/encrypted/
-scp 'inno-build:inno-test/enc-full-tool*.exe'  tests/samples/encrypted/
+tests/samples/build/build-wine.sh --all              # the whole matrix
+tests/samples/build/build-wine.sh 6_4_3 plain code   # one compiler, named scripts
+tests/samples/build/build-wine.sh --alt 6_5_2 plain  # a nondeterminism rebuild
 ```
+
+The matrix is [`build/versions.txt`](build/versions.txt): each row names
+a fixture slug, the exact installer it is built with (the Unicode or
+ANSI build, beta or preview, that its version marker calls for) and the
+scripts compiled with it. The image installs every row, plus the
+`ISCrypt.dll` add-on the pre-6.4 compilers need to encrypt, and is
+rebuilt automatically when the matrix changes.
+
+It replaces the Windows build host these fixtures were first made on.
+Control: rebuilt under Wine, 34 of the 35 fixtures that host produced
+parse identically (version marker, loader family, compression,
+encryption, header strings, entry counts, files, and the extracted
+payload). The 35th, `enc-full-tool6_7_0.exe`, had been built from an
+earlier `encrypted-full.iss` and differed in exactly what that script
+has since changed; the rebuild is current.
 
 ## Coverage gaps
 
 Versions and edge cases not yet in the matrix:
 
-- **Plain 6.7.0** - see note above; trivial rebuild.
-- **4.x** representative - needs older VC runtime on the host.
+- **4.x** representative - no 4.x installer is in the matrix yet.
 - **3.x / 2.x / 1.5** - pre-4.0.9 setup-loader paths.
 - **16-bit 1.2.x** - pre-PE setup loader; needs a separate build
   script. Validates `BITS16` flag and `i1.2.10--16` legacy marker.

@@ -1,0 +1,32 @@
+# The compiler matrix: every Inno Setup the fixtures are built with.
+#
+#   <slug>  <installer URL>  <scripts>
+#
+# `<slug>` names the fixtures (`plain-tool<slug>.exe`) and the install
+# directory in the image (`C:\inno\<slug>`). `<scripts>` is what
+# `build-wine.sh --all` compiles with it, comma-separated; `alt` builds
+# every other script a second time into `-alt` names, the nondeterminism
+# check.
+#
+# Each URL is the exact installer the committed fixture's version marker
+# calls for: 5.3.11, 5.4.3 and 5.5.5 are Unicode builds (`(u)`), 5.0.8,
+# 5.1.14, 5.2.3 and 5.5.7 ANSI, `6_0_0u` the 6.0.0 beta, and `7_0_0_1`
+# (marker 7.0.0.1) the 7.0.0 preview-3. `full.iss` is built with 6.1.0
+# and 6.4.0, the two header formats the third-party installers it replaces
+# were built with.
+5_0_8    https://files.jrsoftware.org/is/5/isetup-5.0.8.exe                                         plain,encrypted
+5_1_14   https://files.jrsoftware.org/is/5/isetup-5.1.14.exe                                        plain,encrypted
+5_2_3    https://files.jrsoftware.org/is/5/isetup-5.2.3.exe                                         plain,encrypted
+5_3_11   https://files.jrsoftware.org/is/5/isetup-5.3.11-unicode.exe                                plain,encrypted
+5_4_3    https://files.jrsoftware.org/is/5/isetup-5.4.3-unicode.exe                                 plain,encrypted
+5_5_5    https://files.jrsoftware.org/is/5/isetup-5.5.5-unicode.exe                                 plain,encrypted
+5_5_7    https://files.jrsoftware.org/is/5/isetup-5.5.7.exe                                         plain,encrypted
+6_0_0u   https://github.com/jrsoftware/issrc/releases/download/is-6_0_0/innosetup-6.0.0-beta.exe   plain,encrypted
+6_1_0    https://github.com/jrsoftware/issrc/releases/download/is-6_1_0/innosetup-6.1.0-beta.exe   full
+6_3_0    https://github.com/jrsoftware/issrc/releases/download/is-6_3_0/innosetup-6.3.0.exe        plain,encrypted
+6_4_0    https://github.com/jrsoftware/issrc/releases/download/is-6_4_0/innosetup-6.4.0.exe        full
+6_4_3    https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe        plain,encrypted,code
+6_5_2    https://github.com/jrsoftware/issrc/releases/download/is-6_5_2/innosetup-6.5.2.exe        plain,encrypted,encrypted-full,alt
+6_6_1    https://github.com/jrsoftware/issrc/releases/download/is-6_6_1/innosetup-6.6.1.exe        plain,encrypted,encrypted-full
+6_7_0    https://github.com/jrsoftware/issrc/releases/download/is-6_7_0/innosetup-6.7.0.exe        plain,encrypted,encrypted-full
+7_0_0_1  https://github.com/jrsoftware/issrc/releases/download/is-7_0_0_2/innosetup-7.0.0-preview-3-x86.exe  plain,encrypted,encrypted-full
