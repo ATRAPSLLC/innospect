@@ -13,39 +13,33 @@
     clippy::indexing_slicing
 )]
 
-use std::{io::Read, path::PathBuf};
+use std::{collections::BTreeSet, io::Read, path::PathBuf};
 
 use innospect::{
     Architecture, Compression, EncryptionMode, Error, HeaderAnsi, HeaderOption, HeaderString,
     InnoInstaller, SetupLdrFamily, Variant,
     analysis::{ExecPhase, RegistryOpKind},
     overlay::offsettable::OffsetTableGeneration,
+    pascalscript::{FrameSlot, Opcode, ProcKind, VarRef},
 };
 
-fn sample(name: &str) -> Option<Vec<u8>> {
+/// Reads `tests/samples/<name>`. The fixtures are committed, so a missing
+/// one fails the test rather than skipping it.
+fn sample(name: &str) -> Vec<u8> {
     let path: PathBuf = format!("{}/tests/samples/{name}", env!("CARGO_MANIFEST_DIR")).into();
-    match std::fs::read(&path) {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            eprintln!("skipping {name}: {e} (see tests/samples/README.md)");
-            None
-        }
-    }
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} (fixtures are committed; see tests/samples/README.md)",
+            path.display()
+        )
+    })
 }
 
-/// Lists every `*.exe` directly under `tests/samples/<subdir>/`.
-/// Returns `None` (with a skip message) if the directory is missing.
-/// Returns `Some(empty)` callers should treat as "no samples present -
-/// assert if your test requires at least one".
-fn samples_in(subdir: &str) -> Option<Vec<(String, PathBuf)>> {
+/// Lists every `*.exe` directly under `tests/samples/<subdir>/`. A missing
+/// directory fails the test; callers assert on how many they tested.
+fn samples_in(subdir: &str) -> Vec<(String, PathBuf)> {
     let dir: PathBuf = format!("{}/tests/samples/{subdir}", env!("CARGO_MANIFEST_DIR")).into();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("skipping {subdir}: {} ({e})", dir.display());
-            return None;
-        }
-    };
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
     let mut out = Vec::new();
     for entry in entries {
         let entry = entry.expect("read_dir entry");
@@ -68,7 +62,7 @@ fn samples_in(subdir: &str) -> Option<Vec<(String, PathBuf)>> {
         out.push((name, path));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    Some(out)
+    out
 }
 
 #[test]
@@ -91,13 +85,16 @@ fn rejects_bare_pe_with_no_inno_payload() {
     );
 }
 
+/// **The 6.4 format, every record stream.** `full.iss` built with Inno
+/// Setup 6.4.0, which writes the `(6.4.0.1)` data marker: LZMA2 files in one
+/// solid chunk, six languages, a license, tasks, icons, registry writes and a
+/// compiled script. Every value asserted is stated in `build/full.iss` or
+/// computed from the payload in `build/full/`.
 #[test]
-fn heidisql_6_4_0_1_identifies() {
-    let Some(bytes) = sample("heidisql-setup.exe") else {
-        return;
-    };
+fn full_6_4_0_1_identifies() {
+    let bytes = sample("full/full-tool6_4_0.exe");
     let inst = InnoInstaller::from_bytes(&bytes).unwrap_or_else(|e| {
-        panic!("HeidiSQL parse failed: {e}");
+        panic!("full 6.4.0 parse failed: {e}");
     });
 
     let v = inst.version();
@@ -107,8 +104,7 @@ fn heidisql_6_4_0_1_identifies() {
         "marker = {:?}",
         v.marker_str()
     );
-    // HeidiSQL ships an ANSI-encoded installer despite the 6.4.0.1
-    // age - the `(u)` suffix is absent in the marker.
+    // The 6.4 marker carries no `(u)` suffix.
     assert!(!v.is_unicode(), "marker = {:?}", v.marker_str());
     assert!(!v.is_isx());
     assert!(!v.is_16bit());
@@ -122,7 +118,7 @@ fn heidisql_6_4_0_1_identifies() {
     );
     assert_eq!(inst.offset_table().version_id, 1);
     assert_eq!(inst.compression(), Compression::Lzma1);
-    // No password set on this installer.
+    // No password is set.
     assert!(matches!(
         inst.encryption().map(|e| e.mode),
         None | Some(EncryptionMode::None),
@@ -142,31 +138,34 @@ fn heidisql_6_4_0_1_identifies() {
     );
 
     // TSetupHeader.
-    let header = inst.header().expect("HeidiSQL has a parsable header");
-    assert_eq!(header.app_name(), Some("HeidiSQL"));
-    assert_eq!(header.app_id(), Some("HeidiSQL"));
-    assert_eq!(header.app_version(), Some("12.17.0.7270"));
-    assert_eq!(header.app_publisher(), Some("Ansgar Becker"));
-    assert_eq!(header.default_dir_name(), Some("{autopf}\\HeidiSQL"));
+    let header = inst.header().expect("full has a parsable header");
+    assert_eq!(header.app_name(), Some("Inno Test (full)"));
+    assert_eq!(header.app_id(), Some("InnoTestFull"));
+    assert_eq!(header.app_version(), Some("2.3.4.5"));
+    assert_eq!(header.app_publisher(), Some("BinFlip"));
+    assert_eq!(header.default_dir_name(), Some("{autopf}\\InnoTestFull"));
     // ChangesAssociations is a 6.0+ field - verify it parsed via the
     // generic accessor too.
     assert!(header.string(HeaderString::ChangesAssociations).is_some());
 
     let counts = header.counts();
-    assert_eq!(counts.languages, 29);
-    assert_eq!(counts.files, 48);
-    assert_eq!(counts.file_locations, 47);
+    // Eight payload files and the uninstaller; each payload file its own
+    // location. Four icons, seven registry values, and two run entries: the
+    // launcher, and the "view the README" entry `isreadme` adds.
+    assert_eq!(counts.languages, 6);
+    assert_eq!(counts.files, 9);
+    assert_eq!(counts.file_locations, 8);
     assert_eq!(counts.icons, 4);
-    assert_eq!(counts.registry, 6);
-    assert_eq!(counts.run, 1);
+    assert_eq!(counts.registry, 7);
+    assert_eq!(counts.run, 2);
     // 6.4.0.1 predates 6.5.0, so NumISSigKeyEntries is absent.
     assert_eq!(counts.iss_sig_keys, None);
 
     // Embedded blobs - convenience accessors fold empty wire
-    // strings to None. HeidiSQL has License + CompiledCode, no
-    // info screens.
+    // strings to None. The script has a license and compiled code, no
+    // info screens; the license is `build/full/license.txt` verbatim.
     let license = inst.license_text().expect("license_text present");
-    assert!(license.len() > 1000, "license was {} bytes", license.len());
+    assert_eq!(license.len(), 1852, "license was {} bytes", license.len());
     assert_eq!(license, header.ansi(HeaderAnsi::LicenseText).unwrap());
     assert!(inst.info_before().is_none(), "no InfoBeforeFile");
     assert!(inst.info_after().is_none(), "no InfoAfterFile");
@@ -205,7 +204,7 @@ fn heidisql_6_4_0_1_identifies() {
         .procs()
         .iter()
         .filter_map(|p| match &p.kind {
-            innospect::pascalscript::ProcKind::External(ext) => Some(ext.name),
+            ProcKind::External(ext) => Some(ext.name),
             _ => None,
         })
         .filter(|name_bytes| {
@@ -217,7 +216,7 @@ fn heidisql_6_4_0_1_identifies() {
         .count();
     assert!(
         known_imports > 0,
-        "HeidiSQL [Code] script should import at least one known Inno API",
+        "the [Code] script imports RegQueryStringValue, a known Inno API",
     );
 
     // Bytecode disassembly: every internal proc must decode
@@ -273,7 +272,7 @@ fn heidisql_6_4_0_1_identifies() {
         .find(|&i| {
             matches!(
                 cc.procs().get(i as usize).map(|p| &p.kind),
-                Some(innospect::pascalscript::ProcKind::Internal(_)),
+                Some(ProcKind::Internal(_)),
             )
         })
         .expect("at least one internal proc");
@@ -282,15 +281,13 @@ fn heidisql_6_4_0_1_identifies() {
         .unwrap()
         .expect("internal proc has bytecode");
     let rendered = format!("{}", cc.display(&disasm));
-    // First line should carry the proc's export name (HeidiSQL's
-    // first internal proc is the synthetic "!MAIN").
+    // First line should carry the proc's export name (the first internal
+    // proc is the synthetic "!MAIN").
     assert!(
         rendered
             .lines()
             .next()
-            .is_some_and(|line| line.contains("MAIN")
-                || line.contains("DONATECLICK")
-                || line.contains("INITIALIZEWIZARD")),
+            .is_some_and(|line| line.contains("MAIN")),
         "first internal proc disasm header missing recognizable name:\n{rendered}",
     );
     // Every subsequent line begins with `  0x` (indented hex
@@ -308,7 +305,7 @@ fn heidisql_6_4_0_1_identifies() {
         .saturating_sub(header.tail_start_offset());
     assert_eq!(
         tail_size, 113,
-        "HeidiSQL 6.4.0.1 fixed tail size mismatch (expected 113, see research-notes/11-fixed-tail.md)",
+        "6.4.0.1 fixed tail size mismatch (expected 113, see research-notes/11-fixed-tail.md)",
     );
     let tail = header.tail();
     // 6.4 dropped BackColor / BackColor2.
@@ -333,22 +330,20 @@ fn heidisql_6_4_0_1_identifies() {
 
     // Second block stream (data records).
     let data = inst.data_block();
-    assert!(
-        !data.is_empty(),
-        "second block (data records) was empty for HeidiSQL",
-    );
+    assert!(!data.is_empty(), "second block (data records) was empty",);
 
     // Lightweight records.
-    assert_eq!(inst.languages().len(), 29);
-    assert_eq!(inst.messages().len(), 348);
+    assert_eq!(inst.languages().len(), 6);
+    // Every language's standard custom messages and the script's own:
+    // the record stream holds what the header counted.
+    assert_eq!(inst.messages().len(), counts.custom_messages as usize);
     assert_eq!(inst.permissions().len(), 0);
     assert_eq!(inst.types().len(), 0);
     assert_eq!(inst.components().len(), 0);
     assert_eq!(inst.tasks().len(), 5);
 
-    // Languages: first entry is en-US (LangID 0x0409). Inno's
-    // compiler emits the system's primary language first when no
-    // explicit `[Languages]` section is provided.
+    // Languages: first entry is en-US (LangID 0x0409), the first the
+    // script declares.
     let first_lang = &inst.languages()[0];
     assert_eq!(first_lang.language_id, 0x0409, "expected en-US first");
     assert_eq!(first_lang.codepage, innospect::LanguageCodepage::Utf16Le);
@@ -371,9 +366,9 @@ fn heidisql_6_4_0_1_identifies() {
         );
     }
 
-    // CustomMessages: HeidiSQL ships the canonical Inno set -
-    // "NameAndVersion" is the first one and present in every Inno
-    // Setup installer that uses the standard language files. Each
+    // CustomMessages: the standard language files carry the canonical
+    // Inno set - "NameAndVersion" is present in every installer that uses
+    // them. Each
     // CustomMessage's `language` index must point at a valid
     // [Languages] slot (or be None for the default).
     let name_and_version_utf16: Vec<u8> = "NameAndVersion"
@@ -396,28 +391,24 @@ fn heidisql_6_4_0_1_identifies() {
         }
     }
 
-    // HeidiSQL has at least one task whose name string decodes via
-    // the per-installer Unicode codepage. We don't need to check
-    // exact set - just that all 5 tasks parse cleanly with non-empty
-    // names.
-    for task in inst.tasks() {
-        assert!(
-            !task.name.is_empty(),
-            "task with empty name on HeidiSQL: {task:?}",
-        );
-    }
+    // The script's five tasks, in order.
+    let tasks: Vec<_> = inst.tasks().iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        tasks,
+        ["desktopicon", "quicklaunch", "associate", "startup", "docs"]
+    );
 
     // Heavy records. Counts must match the header table.
     assert_eq!(inst.directories().len(), 0);
-    assert_eq!(inst.files().len(), 48);
+    assert_eq!(inst.files().len(), 9);
     assert_eq!(inst.icons().len(), 4);
     assert_eq!(inst.ini_entries().len(), 0);
-    assert_eq!(inst.registry_entries().len(), 6);
+    assert_eq!(inst.registry_entries().len(), 7);
     assert_eq!(inst.install_deletes().len(), 0);
     assert_eq!(inst.uninstall_deletes().len(), 0);
-    assert_eq!(inst.run_entries().len(), 1);
+    assert_eq!(inst.run_entries().len(), 2);
     assert_eq!(inst.uninstall_runs().len(), 0);
-    assert_eq!(inst.file_locations().len(), 47);
+    assert_eq!(inst.file_locations().len(), 8);
 
     // Files: first entry is the uninstaller (location_index ==
     // u32::MAX); the second is the headline binary.
@@ -425,52 +416,52 @@ fn heidisql_6_4_0_1_identifies() {
     let main_exe = inst
         .files()
         .iter()
-        .find(|f| f.destination.ends_with("heidisql.exe"))
-        .expect("heidisql.exe missing from files");
+        .find(|f| f.destination.ends_with("app.exe"))
+        .expect("app.exe missing from files");
     // Main binary is the first chunk → file-location[0].
     assert_eq!(main_exe.location_index, 0);
 
-    // At least one registry entry must have a Subkey containing
-    // "HeidiSQL" - verifies the registry record stream parsed the
-    // installer's HKCU/HKLM writes.
+    // The HKCU and HKLM writes name the application's key.
     assert!(
         inst.registry_entries()
             .iter()
-            .any(|r| r.subkey.contains("HeidiSQL")),
-        "expected a registry entry with subkey containing HeidiSQL",
+            .any(|r| r.subkey.contains("InnoTestFull")),
+        "expected a registry entry with subkey containing InnoTestFull",
     );
-    // File-association entries: 4 of the 6 are under HKCR.
+    // File-association entries: 4 of the 7 are under HKCR.
     let hkcr_count = inst
         .registry_entries()
         .iter()
         .filter(|r| matches!(r.hive, innospect::RegistryHive::ClassesRoot))
         .count();
-    assert!(hkcr_count >= 4, "HKCR registry entries < 4: {hkcr_count}");
+    assert_eq!(hkcr_count, 4, "HKCR registry entries");
 
-    // Icons: the headline shortcut points at heidisql.exe.
+    // Icons: the headline shortcut points at app.exe.
     let group_lnk = inst
         .icons()
         .iter()
-        .find(|i| i.name.contains("HeidiSQL"))
-        .expect("missing HeidiSQL Start Menu icon");
-    assert!(group_lnk.filename.ends_with("heidisql.exe"));
+        .find(|i| i.name.contains("Inno Test Full"))
+        .expect("missing Start Menu icon");
+    assert!(group_lnk.filename.ends_with("app.exe"));
 
-    // The single Run entry is the post-install launcher.
-    assert!(inst.run_entries()[0].name.ends_with("heidisql.exe"));
-    assert!(
-        inst.run_entries()[0]
-            .flags
-            .contains(&innospect::RunFlag::PostInstall),
-    );
+    // The launcher is a post-install run entry.
+    let launcher = inst
+        .run_entries()
+        .iter()
+        .find(|r| r.name.ends_with("app.exe"))
+        .expect("the app.exe launcher");
+    assert!(launcher.flags.contains(&innospect::RunFlag::PostInstall));
 
     // Analysis-API roundtrip: exec_commands tags the install-time
     // entry, registry_ops classifies HKCR file-association writes,
     // and shortcuts resolves the Start Menu icon to the
-    // heidisql.exe FileEntry.
+    // app.exe FileEntry.
+    // Both run entries are install-time commands: the launcher and the
+    // README viewer.
     let exec: Vec<_> = inst.exec_commands().collect();
-    assert_eq!(exec.len(), 1, "exec_commands should yield 1 entry");
-    assert_eq!(exec[0].phase, ExecPhase::Install);
-    assert!(exec[0].filename().ends_with("heidisql.exe"));
+    assert_eq!(exec.len(), 2, "exec_commands should yield 2 entries");
+    assert!(exec.iter().all(|e| e.phase == ExecPhase::Install));
+    assert!(exec.iter().any(|e| e.filename().ends_with("app.exe")));
 
     let writes = inst
         .registry_ops()
@@ -487,12 +478,13 @@ fn heidisql_6_4_0_1_identifies() {
         "at least one shortcut should resolve to a [Files] entry",
     );
 
-    // File locations: chunk_compressed_size of file-location[0]
-    // (the headline binary) is non-trivial.
+    // File locations: the solid chunk holds app.exe's 64 KiB of
+    // pseudo-random bytes, which do not compress.
     let fl = &inst.file_locations()[0];
     assert!(
-        fl.chunk_compressed_size > 1024 * 1024,
-        "first chunk should be > 1 MiB compressed",
+        fl.chunk_compressed_size > 60 * 1024,
+        "the solid chunk should be > 60 KiB compressed, was {}",
+        fl.chunk_compressed_size,
     );
     // SHA-256 checksum (6.4+).
     assert!(matches!(fl.checksum, innospect::DataChecksum::Sha256(_)));
@@ -501,11 +493,11 @@ fn heidisql_6_4_0_1_identifies() {
     let main_exe = inst
         .files()
         .iter()
-        .find(|f| f.destination.ends_with("heidisql.exe"))
-        .expect("heidisql.exe missing");
-    let bytes = inst.extract_to_vec(main_exe).expect("extract heidisql.exe");
-    assert_eq!(bytes.len(), 24_935_176, "heidisql.exe size");
-    assert_eq!(&bytes[..2], b"MZ", "heidisql.exe should start with MZ");
+        .find(|f| f.destination.ends_with("app.exe"))
+        .expect("app.exe missing");
+    let bytes = inst.extract_to_vec(main_exe).expect("extract app.exe");
+    assert_eq!(bytes.len(), 65_536, "app.exe size");
+    assert_eq!(&bytes[..2], b"MZ", "app.exe should start with MZ");
 
     // Uninstaller reconstruction: same length as the input, MZ
     // header preserved, and the four bytes at offset 0x30 are the
@@ -513,7 +505,7 @@ fn heidisql_6_4_0_1_identifies() {
     let installer_bytes = inst.input();
     let unins = inst
         .extract_uninstaller()
-        .expect("HeidiSQL ships an uninstaller");
+        .expect("the installer ships an uninstaller");
     assert_eq!(
         unins.len(),
         installer_bytes.len(),
@@ -526,7 +518,7 @@ fn heidisql_6_4_0_1_identifies() {
     assert_eq!(&unins[0x34..], &installer_bytes[0x34..]);
 
     // Solid LZMA proof: license.txt lives in the same chunk as
-    // heidisql.exe but at a non-zero chunk_sub_offset. Both
+    // app.exe but at a non-zero chunk_sub_offset. Both
     // extractions must succeed - the second hits the OnceLock cache.
     let license = inst
         .files()
@@ -534,13 +526,13 @@ fn heidisql_6_4_0_1_identifies() {
         .find(|f| f.destination.ends_with("license.txt"))
         .expect("license.txt missing");
     let lic_bytes = inst.extract_to_vec(license).expect("extract license.txt");
-    assert_eq!(lic_bytes.len(), 2012, "license.txt size");
+    assert_eq!(lic_bytes.len(), 1852, "license.txt size");
 
     // Streaming: read via io::Read and verify post-EOF reads return 0.
     let mut reader = inst.extract(license).expect("re-extract via Read");
     let mut sink = Vec::new();
     reader.read_to_end(&mut sink).expect("streaming read");
-    assert_eq!(sink.len(), 2012);
+    assert_eq!(sink.len(), 1852);
     let mut tail = [0u8; 16];
     assert_eq!(reader.read(&mut tail).expect("post-EOF read"), 0);
 
@@ -557,18 +549,21 @@ fn heidisql_6_4_0_1_identifies() {
         total = total.saturating_add(bytes.len() as u64);
         extracted = extracted.saturating_add(1);
     }
-    assert_eq!(extracted, 47);
-    // 47 files share one solid LZMA2 chunk; total = chunk size.
-    assert_eq!(total, 82_450_683);
+    assert_eq!(extracted, 8);
+    // app.exe 65536 + license.txt 1852 + readme.txt 21 + doc1..5, each
+    // 22 bytes repeated 10 * i times: 220 * (1 + 2 + 3 + 4 + 5) = 3300.
+    assert_eq!(total, 70_709);
 }
 
+/// **The 6.1 format.** `full.iss` built with Inno Setup 6.1.0: a Unicode
+/// build, LZMA1 with one chunk per file and the executable through the x86
+/// filter, SHA-1 checksums, and the packed architecture sets and back colours
+/// of the pre-6.3 fixed tail.
 #[test]
-fn imagemagick_6_1_0_identifies() {
-    let Some(bytes) = sample("imagemagick-setup.exe") else {
-        return;
-    };
+fn full_6_1_0_identifies() {
+    let bytes = sample("full/full-tool6_1_0.exe");
     let inst = InnoInstaller::from_bytes(&bytes).unwrap_or_else(|e| {
-        panic!("ImageMagick parse failed: {e}");
+        panic!("full 6.1.0 parse failed: {e}");
     });
 
     let v = inst.version();
@@ -599,24 +594,18 @@ fn imagemagick_6_1_0_identifies() {
     );
 
     // TSetupHeader.
-    let header = inst.header().expect("ImageMagick has a parsable header");
-    assert_eq!(
-        header.app_name(),
-        Some("ImageMagick 7.1.2 Q16-HDRI (32-bit)")
-    );
-    assert_eq!(header.app_publisher(), Some("ImageMagick Studio LLC"));
-    assert_eq!(header.app_version(), Some("7.1.2.21"));
-    assert_eq!(
-        header.default_dir_name(),
-        Some("{commonpf}\\ImageMagick-7.1.2-Q16-HDRI"),
-    );
+    let header = inst.header().expect("full has a parsable header");
+    assert_eq!(header.app_name(), Some("Inno Test (full)"));
+    assert_eq!(header.app_publisher(), Some("BinFlip"));
+    assert_eq!(header.app_version(), Some("2.3.4.5"));
+    assert_eq!(header.default_dir_name(), Some("{autopf}\\InnoTestFull"));
 
     let counts = header.counts();
-    assert_eq!(counts.languages, 1);
-    assert_eq!(counts.files, 353);
-    assert_eq!(counts.file_locations, 351);
-    assert_eq!(counts.icons, 1);
-    assert_eq!(counts.registry, 12);
+    assert_eq!(counts.languages, 6);
+    assert_eq!(counts.files, 9);
+    assert_eq!(counts.file_locations, 8);
+    assert_eq!(counts.icons, 4);
+    assert_eq!(counts.registry, 7);
     assert_eq!(counts.iss_sig_keys, None);
 
     // Fixed numeric tail.
@@ -625,7 +614,7 @@ fn imagemagick_6_1_0_identifies() {
         .saturating_sub(header.tail_start_offset());
     assert_eq!(
         tail_size, 103,
-        "ImageMagick 6.1.0 fixed tail size mismatch (expected 103, see research-notes/11-fixed-tail.md)",
+        "6.1.0 fixed tail size mismatch (expected 103, see research-notes/11-fixed-tail.md)",
     );
     let tail = header.tail();
     // 6.1 still carries BackColor / BackColor2.
@@ -644,13 +633,10 @@ fn imagemagick_6_1_0_identifies() {
 
     // Second block stream (data records).
     let data = inst.data_block();
-    assert!(
-        !data.is_empty(),
-        "second block (data records) was empty for ImageMagick",
-    );
+    assert!(!data.is_empty(), "second block (data records) was empty",);
 
     // Lightweight records.
-    assert_eq!(inst.languages().len(), 1);
+    assert_eq!(inst.languages().len(), 6);
     assert_eq!(inst.permissions().len(), 0);
 
     let lang = &inst.languages()[0];
@@ -664,36 +650,33 @@ fn imagemagick_6_1_0_identifies() {
 
     // Heavy records.
     assert_eq!(inst.directories().len(), 0);
-    assert_eq!(inst.files().len(), 353);
-    assert_eq!(inst.icons().len(), 1);
-    assert_eq!(inst.registry_entries().len(), 12);
-    assert_eq!(inst.run_entries().len(), 1);
-    assert_eq!(inst.file_locations().len(), 351);
+    assert_eq!(inst.files().len(), 9);
+    assert_eq!(inst.icons().len(), 4);
+    assert_eq!(inst.registry_entries().len(), 7);
+    assert_eq!(inst.run_entries().len(), 2);
+    assert_eq!(inst.file_locations().len(), 8);
 
     // Uninstaller is files[0].
     assert_eq!(inst.files()[0].location_index, u32::MAX);
-    // ImageMagick should ship magick.exe.
     assert!(
         inst.files()
             .iter()
-            .any(|f| f.destination.ends_with("magick.exe")),
-        "magick.exe missing from files",
+            .any(|f| f.destination.ends_with("app.exe")),
+        "app.exe missing from files",
     );
-    // At least one registry entry should be for the file-association
-    // class - verifies the registry record stream parsed.
     assert!(
         inst.registry_entries()
             .iter()
-            .any(|r| r.subkey.contains("ImageMagick")),
-        "no ImageMagick subkey in registry entries",
+            .any(|r| r.subkey.contains("InnoTestFull")),
+        "no InnoTestFull subkey in registry entries",
     );
-    // ImageMagick uses LocalMachine for its config keys.
+    // The script writes one value under LocalMachine.
     let hklm_count = inst
         .registry_entries()
         .iter()
         .filter(|r| matches!(r.hive, innospect::RegistryHive::LocalMachine))
         .count();
-    assert!(hklm_count > 0, "expected at least one HKLM entry");
+    assert_eq!(hklm_count, 1, "HKLM entries");
 
     // 6.1.0 uses SHA-1 for file-location checksums (5.3.9..6.4.0).
     assert!(matches!(
@@ -701,22 +684,22 @@ fn imagemagick_6_1_0_identifies() {
         innospect::DataChecksum::Sha1(_)
     ));
 
-    // Extract magick.exe (LZMA1 + 5309 BCJ on a pre-6.4 sample -
-    // exercises a different code path than HeidiSQL's LZMA2).
+    // Extract app.exe (LZMA1 + 5309 BCJ on a pre-6.4 build - a
+    // different code path than the 6.4 build's solid LZMA2).
     // Checksum verification is enforced internally; the mere fact
     // that extract_to_vec returns `Ok` proves the checksum matched.
-    let magick = inst
+    let app = inst
         .files()
         .iter()
-        .find(|f| f.destination.ends_with("magick.exe"))
-        .expect("magick.exe missing");
-    let bytes = inst.extract_to_vec(magick).expect("extract magick.exe");
-    assert!(bytes.len() > 1024, "magick.exe should be > 1 KiB");
-    assert_eq!(&bytes[..2], b"MZ", "magick.exe should start with MZ");
+        .find(|f| f.destination.ends_with("app.exe"))
+        .expect("app.exe missing");
+    let bytes = inst.extract_to_vec(app).expect("extract app.exe");
+    assert_eq!(bytes.len(), 65_536, "app.exe size");
+    assert_eq!(&bytes[..2], b"MZ", "app.exe should start with MZ");
 
-    // Bulk extraction. ImageMagick's 351 file_locations across
-    // multiple chunks exercise the OnceLock chunk cache more
-    // heavily than HeidiSQL's single-chunk solid layout.
+    // Bulk extraction across one chunk per file, which exercises the
+    // OnceLock chunk cache differently from the 6.4 build's single
+    // solid chunk.
     let mut extracted = 0usize;
     for f in inst.files() {
         if f.location_index == u32::MAX {
@@ -727,19 +710,76 @@ fn imagemagick_6_1_0_identifies() {
             .unwrap_or_else(|e| panic!("extract {:?}: {e}", f.destination));
         extracted = extracted.saturating_add(1);
     }
-    assert_eq!(extracted, 352);
+    assert_eq!(extracted, 8);
+}
+
+/// **Every fixture the matrix builds is committed, and nothing else.** The
+/// expected set is derived from `build/versions.txt` with the naming
+/// `build/build-wine.sh` files outputs under, so a fixture missing from a
+/// checkout fails here instead of shrinking what the directory walkers test.
+#[test]
+fn every_matrix_fixture_is_present() {
+    let root = format!("{}/tests/samples", env!("CARGO_MANIFEST_DIR"));
+    let matrix = std::fs::read_to_string(format!("{root}/build/versions.txt"))
+        .expect("read build/versions.txt");
+
+    let mut expected = BTreeSet::new();
+    for line in matrix.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [slug, _url, scripts] = fields[..] else {
+            panic!("versions.txt: malformed row {line:?}");
+        };
+        let scripts: Vec<&str> = scripts.split(',').collect();
+        let suffixes: &[&str] = if scripts.contains(&"alt") {
+            &["", "-alt"]
+        } else {
+            &[""]
+        };
+        for &script in scripts.iter().filter(|&&s| s != "alt") {
+            for suffix in suffixes {
+                expected.insert(match script {
+                    "plain" => format!("plain/plain-tool{slug}{suffix}.exe"),
+                    "encrypted" => format!("encrypted/enc-files-tool{slug}{suffix}.exe"),
+                    "encrypted-full" => format!("encrypted/enc-full-tool{slug}{suffix}.exe"),
+                    other => format!("{other}/{other}-tool{slug}{suffix}.exe"),
+                });
+            }
+        }
+    }
+
+    let dirs: BTreeSet<&str> = expected
+        .iter()
+        .filter_map(|p| p.split_once('/').map(|(dir, _)| dir))
+        .collect();
+    let present: BTreeSet<String> = dirs
+        .iter()
+        .flat_map(|dir| {
+            samples_in(dir)
+                .into_iter()
+                .map(move |(name, _)| format!("{dir}/{name}"))
+        })
+        .collect();
+
+    let missing: Vec<_> = expected.difference(&present).collect();
+    let unexpected: Vec<_> = present.difference(&expected).collect();
+    assert!(
+        missing.is_empty() && unexpected.is_empty(),
+        "fixtures out of step with build/versions.txt\n  missing: {missing:?}\n  not in the matrix: {unexpected:?}",
+    );
 }
 
 /// Walks `tests/samples/plain/` and parses every `*.exe`. Each sample
 /// must report no encryption, expose a parsable header, and extract
-/// the canonical 21-byte `payload.txt` cleanly. Fails the whole
-/// suite if zero samples are present (the directory exists but is
-/// empty), so a missing matrix can't silently degrade to a no-op.
+/// the canonical 21-byte `payload.txt` cleanly. Fails if the directory
+/// is missing or empty, so a missing matrix can't silently degrade to a
+/// no-op; [`every_matrix_fixture_is_present`] catches a single missing file.
 #[test]
 fn plain_samples_parse_and_extract() {
-    let Some(samples) = samples_in("plain") else {
-        return;
-    };
+    let samples = samples_in("plain");
     let mut tested = 0usize;
     for (name, path) in samples {
         let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{name}: read: {e}"));
@@ -812,12 +852,10 @@ fn plain_samples_parse_and_extract() {
 ///   - wrong-password trial must fail with `WrongPassword`,
 ///   - `"test123"` must unlock and yield the canonical payload.
 ///
-/// Fails the suite if zero samples are present.
+/// Fails unless both kinds are present.
 #[test]
 fn encrypted_samples_parse_and_unlock() {
-    let Some(samples) = samples_in("encrypted") else {
-        return;
-    };
+    let samples = samples_in("encrypted");
 
     let mut tested_files = 0usize;
     let mut tested_full = 0usize;
@@ -922,8 +960,135 @@ fn encrypted_samples_parse_and_unlock() {
         }
     }
     assert!(
-        tested_files > 0 || tested_full > 0,
-        "no encrypted samples found under tests/samples/encrypted/",
+        tested_files > 0 && tested_full > 0,
+        "tests/samples/encrypted/ needs both euFiles and euFull samples \
+         (files={tested_files} full={tested_full})",
     );
     eprintln!("encrypted_samples_parse_and_unlock: files={tested_files} full={tested_full}");
+}
+
+/// **Every branch lands on an instruction of its own procedure.** IFPS
+/// branches are deltas from the end of their instruction - the gotos, the
+/// pop-and-gotos, `flaggoto` and the exception-handler sections alike - so
+/// each resolves to an instruction boundary (or the end of the body) of the
+/// procedure it sits in. Read as a procedure-local absolute, `flaggoto`
+/// reached a boundary for 4 of the 14 in a real-world installer, and the
+/// exception sections for none of the 4 in `code-tool6_4_3.exe`; the
+/// population assertion keeps this from passing on an installer with no
+/// branches.
+#[test]
+fn every_script_branch_lands_on_an_instruction() {
+    let mut branches = 0usize;
+    for name in [
+        "code/code-tool6_4_3.exe",
+        "full/full-tool6_4_0.exe",
+        "full/full-tool6_1_0.exe",
+    ] {
+        let bytes = sample(name);
+        let inst = InnoInstaller::from_bytes(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let cc = inst
+            .compiledcode()
+            .expect("compiledcode() returns Some")
+            .expect("IFPS Container parses");
+        for proc_index in 0..(cc.procs().len() as u32) {
+            let Some(disasm) = cc
+                .disassemble(proc_index)
+                .unwrap_or_else(|e| panic!("{name}: disassemble proc {proc_index}: {e}"))
+            else {
+                continue;
+            };
+            let starts: BTreeSet<u32> = disasm.instructions.iter().map(|i| i.offset).collect();
+            let end = disasm.instructions.last().map_or(0, |i| i.next_offset);
+            for instruction in &disasm.instructions {
+                for target in instruction.branch_targets().into_iter().flatten() {
+                    branches += 1;
+                    assert!(
+                        starts.contains(&target) || target == end,
+                        "{name}: proc {proc_index} {:?} at {:#x} targets {target:#x}, \
+                         no instruction of its procedure",
+                        instruction.opcode,
+                        instruction.offset,
+                    );
+                }
+            }
+        }
+    }
+    assert!(branches > 0, "the installers carry no branches");
+}
+
+/// **A compiled script's frames are what its declarations say.** Over every
+/// procedure of `code-tool6_4_3.exe`: each declaration parses; each body's
+/// stack height is consistent on every path, try blocks included; every call
+/// to an internal procedure consumes exactly the slots its declaration names,
+/// which is also how many the caller pops right after it (the two rules
+/// `StackMap::call_slots` chooses between, checked against each other); and
+/// every stack operand names a slot that exists where it is used - a result
+/// or parameter below the frame base, a live local above it.
+#[test]
+fn every_script_frame_matches_its_declaration() {
+    let bytes = sample("code/code-tool6_4_3.exe");
+    let inst = InnoInstaller::from_bytes(&bytes).expect("parses");
+    let cc = inst.compiledcode().expect("code").expect("container");
+    let (mut calls, mut operands, mut dll) = (0usize, 0usize, 0usize);
+    for proc in cc.procs() {
+        if let ProcKind::External(external) = &proc.kind {
+            let decl = external
+                .declaration()
+                .expect("the compiler declares every import")
+                .expect("parses");
+            dll += usize::from(decl.dll.is_some());
+        }
+    }
+    for index in 0..(cc.procs().len() as u32) {
+        let Some(ProcKind::Internal(internal)) = cc.proc(index).map(|p| &p.kind) else {
+            continue;
+        };
+        let signature = internal.signature().expect("declared").expect("parses");
+        let disasm = cc.disassemble(index).unwrap().expect("internal");
+        let map = disasm.stack_map().expect("consistent heights");
+        for (at, instruction) in disasm.instructions.iter().enumerate() {
+            let Some(height) = map.height_before(at) else {
+                continue;
+            };
+            if let Opcode::Call { proc_no } = instruction.opcode
+                && let Some(ProcKind::Internal(callee)) = cc.proc(proc_no).map(|p| &p.kind)
+            {
+                let declared = callee.signature().unwrap().unwrap().slot_count();
+                let by_declaration = map.call_slots(&disasm, at, Some(declared));
+                let by_pops = map.call_slots(&disasm, at, None);
+                assert_eq!(by_declaration, by_pops, "call at {:#x}", instruction.offset);
+                assert!(by_declaration.is_some());
+                calls += 1;
+            }
+            let mut check = |var: VarRef| {
+                let VarRef::Stack(offset) = var else {
+                    return;
+                };
+                match signature.slot(offset) {
+                    FrameSlot::Local(n) => assert!(
+                        n <= height,
+                        "s+{n} at {:#x} is above the stack ({height})",
+                        instruction.offset
+                    ),
+                    FrameSlot::Result | FrameSlot::Param(_) => {}
+                    other => panic!("{other:?} at {:#x}", instruction.offset),
+                }
+                operands += 1;
+            };
+            for var in instruction
+                .opcode
+                .operands()
+                .into_iter()
+                .flat_map(|operand| operand.var_refs())
+            {
+                check(var);
+            }
+        }
+    }
+    assert!(calls >= 6, "the script calls its procedures ({calls})");
+    assert!(
+        operands > 50,
+        "the bodies address their frames ({operands})"
+    );
+    assert_eq!(dll, 1, "MessageBeep is a DLL import");
 }

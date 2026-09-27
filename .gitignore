@@ -2,4 +2,11 @@
 /research
 /tests/samples/*.exe
 /tests/samples/*.bin
+# Built fixtures (`tests/samples/build/build-wine.sh`). Not `build/` itself:
+# `build/full/app.exe` is a payload the scripts compile in, not an output.
+/tests/samples/plain/*.exe
+/tests/samples/encrypted/*.exe
+/tests/samples/full/*.exe
+/tests/samples/code/*.exe
+/tests/samples/quarantine/*.exe
 Cargo.lock
