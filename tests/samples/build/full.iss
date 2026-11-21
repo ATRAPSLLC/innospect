@@ -5,14 +5,16 @@
 ;
 ; It replaces the third-party installers the suite used to fetch, and covers
 ; what they did: many languages (including non-Latin codepages), custom
-; messages, a license, tasks, files in solid and per-file chunks, icons
-; resolving to an installed file, registry writes under HKCR, HKCU and HKLM,
-; a post-install run entry, and a compiled [Code] script importing the Inno
-; API.
+; messages, a license, tasks, files in solid and per-file chunks and one
+; stored uncompressed, icons resolving to an installed file, registry entries
+; under HKCR, HKCU, HKLM and HKA with every value type and every operation
+; Setup performs (write, write if missing, create the key, delete a value or
+; a key, replace either, record for the uninstaller only), a post-install
+; run entry, and a compiled [Code] script importing the Inno API.
 ;
 ; The payload lives in `full/`, and its contents are fixed: `app.exe` is 65536
-; bytes starting `MZ`, `license.txt` 1852 bytes, `readme.txt` 21 bytes, and
-; `docs/doc1..5.txt`.
+; bytes starting `MZ`, `license.txt` 1852 bytes, `readme.txt` 21 bytes, `stored.txt`
+; 21 bytes (stored without compression), and `docs/doc1..5.txt`.
 
 [Setup]
 AppId=InnoTestFull
@@ -72,6 +74,8 @@ Source: "full\app.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "full\license.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "full\readme.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "full\docs\*.txt"; DestDir: "{app}\docs"; Tasks: docs; Flags: ignoreversion
+; Stored as is, in a chunk of its own: the uncompressed-chunk path.
+Source: "full\stored.txt"; DestDir: "{app}"; Flags: ignoreversion nocompression
 
 [Icons]
 Name: "{group}\Inno Test Full"; Filename: "{app}\app.exe"
@@ -87,9 +91,24 @@ Root: HKCR; Subkey: "InnoTestFile\shell\open\command"; ValueType: string; ValueN
 Root: HKCU; Subkey: "Software\InnoTestFull"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\InnoTestFull"; ValueType: dword; ValueName: "Runs"; ValueData: "0"
 Root: HKLM; Subkey: "Software\InnoTestFull"; ValueType: string; ValueName: "Version"; ValueData: "2.3.4.5"; Flags: uninsdeletekey
+; The other value types, and HKA (HKLM or HKCU by install mode).
+Root: HKA; Subkey: "Software\InnoTestFull"; ValueType: expandsz; ValueName: "Temp"; ValueData: "%TEMP%\InnoTestFull"
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds"; ValueType: binary; ValueName: "Blob"; ValueData: "01 02 ff"
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds"; ValueType: multisz; ValueName: "Lines"; ValueData: "one{break}two"
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds"; ValueType: qword; ValueName: "Big"; ValueData: "$123456789"
+; One entry for each thing Setup can do with an entry (`RegistryOpKind`).
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds"; ValueType: string; ValueName: "IfMissing"; ValueData: "first"; Flags: createvalueifdoesntexist
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds\Empty"; ValueType: none
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds"; ValueType: none; ValueName: "Stale"; Flags: deletevalue
+Root: HKCU; Subkey: "Software\InnoTestFull\Old"; ValueType: none; Flags: deletekey
+Root: HKCU; Subkey: "Software\InnoTestFull\Kinds"; ValueType: dword; ValueName: "Swap"; ValueData: "7"; Flags: deletevalue
+Root: HKCU; Subkey: "Software\InnoTestFull\Fresh"; ValueType: string; ValueName: "Value"; ValueData: "new"; Flags: deletekey
+Root: HKCU; Subkey: "Software\InnoTestFull\Mark"; ValueType: none; Flags: dontcreatekey uninsdeletekey
+; Bitness (`HKLM64`): a flag before 7.0.0.3, a byte of its own from it.
+Root: HKLM64; Subkey: "Software\InnoTestFull"; ValueType: string; ValueName: "Bits"; ValueData: "64"
 
 [Run]
-Filename: "{app}\app.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\app.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent 32bit
 
 [Code]
 { An Inno API import, so the compiled script names a known host function. }

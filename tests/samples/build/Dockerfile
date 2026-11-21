@@ -14,7 +14,8 @@ FROM archlinux:base
 # Xvfb because Setup creates windows even when silent, and Wine has no display
 # driver to create them on without one: the install fails with "A call to an
 # OS function failed".
-RUN pacman -Syu --noconfirm --needed wine curl xorg-server-xvfb \
+# innoextract unpacks the 1.x to 4.x packages (see install-inno.sh).
+RUN pacman -Syu --noconfirm --needed wine curl xorg-server-xvfb innoextract \
     && pacman -Scc --noconfirm
 
 # The prefix, provisioned once here rather than on every compile.

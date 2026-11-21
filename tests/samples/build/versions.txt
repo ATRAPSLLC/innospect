@@ -13,20 +13,119 @@
 # 5.1.14, 5.2.3 and 5.5.7 ANSI, `6_0_0u` the 6.0.0 beta, and `7_0_0_1`
 # (marker 7.0.0.1) the 7.0.0 preview-3. `full.iss` is built with 6.1.0
 # and 6.4.0, the two header formats the third-party installers it replaces
-# were built with.
+# were built with, with 6.4.2 (the first `(6.4.2)` header), and with 7.0.2
+# and 7.1.1. 7.0.2 writes marker 7.0.0.3, the format 7.0.0 through 7.1.0
+# share; 7.1.1 writes 7.1.1. Both are the 32-bit compiler editions, which
+# build 64-bit installers too (`-x64`). `password` is built once per place
+# the password verifier has lived: the pre-6.4 header (5.5.7), the 6.4
+# header tail (6.4.3) and the 6.5+ encryption header (7.0.2, 7.1.1).
+#
+# `legacy.iss` is built once per setup data marker from 1.3.25 to 4.2.6,
+# each with the last release that writes it (a beta or pre-release where
+# only one did: 3.0.0, 3.0.2, 3.0.3, 3.0.4, 4.0.0, 4.0.2, 4.0.4). 3.0.4
+# and 4.2.4 are there for their layouts: they write the markers 3.0.3 and
+# 4.2.3, the formats 3.0.3 and 4.2.3 also write. No 1.2.x row: the one
+# 1.2 package left is the 16-bit edition, which Wine cannot run.
+#
+# `plain.iss` is also built once per remaining 5.x and 6.x marker, with the
+# last release that writes it, and from 5.3.0 to 5.5.x in both editions: a
+# slug ending `u` is the Unicode build, and `5_3_11a`, `5_4_3a`, `5_5_5a` the
+# ANSI builds beside the Unicode `5_3_11`, `5_4_3`, `5_5_5`. 5.5.8 and 5.6.1
+# write 5.5.7's marker, 5.6.1 with the counted wizard-image lists.
+#
+# `-zip`, `-bzip`, `-lzma` and `-none` builds (`build-wine.sh`) cover every
+# place the compression method shows: the per-file bzip2 flag (2.0.19), the
+# bzip2 header option and its DLL before 4.1.5 (4.0.8, 4.1.4), 4.1.5's DLL
+# for LZMA too, the zip DLL from 4.2.6 (4.2.7, 5.5.7, 7.1.1), and stored
+# chunks (7.1.1). `modern.iss` (6.6.1, 6.7.0, 7.1.1) carries dark-mode and
+# back wizard images and the 7-Zip DLL.
+#
+# `spanning.iss` (4.0+) and `spanning-legacy.iss` (1.x, 2.x) spread the
+# payload over slice files, built once per slice-file generation: the
+# `<base>.<n>` names before 2.0, `<base>-<n>.bin` with the header's base
+# name to 4.x, the installer's own name from 5.0, `idska32` with a 32-bit
+# size to 6.5.1 and `idskb32` with a 64-bit one from 6.5.2.
+#
+# `7_0_0p2` is 7.0.0 preview 2 and `7_0_0_1` preview 3: both write SetupID
+# 7.0.0.1, and only preview 3 has the PBKDF2 bug its `password` build pins.
+1_3_26   https://files.jrsoftware.org/is/1.3/isetup-1.3.26.exe                                      legacy,spanning-legacy
+2_0_19   https://files.jrsoftware.org/is/2/isetup-2.0.19.exe                                        legacy,legacy-bzip,spanning-legacy
+3_0_0    https://files.jrsoftware.org/is/3/isetup-3.0.0-beta.exe                                    legacy
+3_0_2    https://files.jrsoftware.org/is/3/isetup-3.0.2-beta.exe                                    legacy
+3_0_3    https://files.jrsoftware.org/is/3/isetup-3.0.3-beta.exe                                    legacy
+3_0_4    https://files.jrsoftware.org/is/3/isetup-3.0.4-beta.exe                                    legacy
+3_0_7    https://files.jrsoftware.org/is/3/isetup-3.0.7.exe                                         legacy
+4_0_0    https://files.jrsoftware.org/is/4/isetup-4.0.0-pre1.exe                                    legacy
+4_0_2    https://files.jrsoftware.org/is/4/isetup-4.0.2-beta.exe                                    legacy
+4_0_4    https://files.jrsoftware.org/is/4/isetup-4.0.4-beta.exe                                    legacy
+4_0_8    https://files.jrsoftware.org/is/4/isetup-4.0.8.exe                                         legacy,legacy-bzip,spanning
+4_0_9    https://files.jrsoftware.org/is/4/isetup-4.0.9.exe                                         legacy
+4_0_10   https://files.jrsoftware.org/is/4/isetup-4.0.10.exe                                        legacy
+4_0_11   https://files.jrsoftware.org/is/4/isetup-4.0.11.exe                                        legacy
+4_1_1    https://files.jrsoftware.org/is/4/isetup-4.1.1.exe                                         legacy
+4_1_2    https://files.jrsoftware.org/is/4/isetup-4.1.2.exe                                         legacy
+4_1_3    https://files.jrsoftware.org/is/4/isetup-4.1.3.exe                                         legacy
+4_1_4    https://files.jrsoftware.org/is/4/isetup-4.1.4.exe                                         legacy,legacy-bzip
+4_1_5    https://files.jrsoftware.org/is/4/isetup-4.1.5.exe                                         legacy,legacy-bzip,legacy-lzma
+4_1_7    https://files.jrsoftware.org/is/4/isetup-4.1.7.exe                                         legacy
+4_1_8    https://files.jrsoftware.org/is/4/isetup-4.1.8.exe                                         legacy
+4_2_0    https://files.jrsoftware.org/is/4/isetup-4.2.0.exe                                         legacy
+4_2_1    https://files.jrsoftware.org/is/4/isetup-4.2.1.exe                                         legacy
+4_2_2    https://files.jrsoftware.org/is/4/isetup-4.2.2.exe                                         legacy
+4_2_3    https://files.jrsoftware.org/is/4/isetup-4.2.3.exe                                         legacy
+4_2_4    https://files.jrsoftware.org/is/4/isetup-4.2.4.exe                                         legacy
+4_2_5    https://files.jrsoftware.org/is/4/isetup-4.2.5.exe                                         legacy
+4_2_7    https://files.jrsoftware.org/is/4/isetup-4.2.7.exe                                         legacy,legacy-zip,legacy-bzip,spanning
 5_0_8    https://files.jrsoftware.org/is/5/isetup-5.0.8.exe                                         plain,encrypted
 5_1_14   https://files.jrsoftware.org/is/5/isetup-5.1.14.exe                                        plain,encrypted
 5_2_3    https://files.jrsoftware.org/is/5/isetup-5.2.3.exe                                         plain,encrypted
 5_3_11   https://files.jrsoftware.org/is/5/isetup-5.3.11-unicode.exe                                plain,encrypted
 5_4_3    https://files.jrsoftware.org/is/5/isetup-5.4.3-unicode.exe                                 plain,encrypted
 5_5_5    https://files.jrsoftware.org/is/5/isetup-5.5.5-unicode.exe                                 plain,encrypted
-5_5_7    https://files.jrsoftware.org/is/5/isetup-5.5.7.exe                                         plain,encrypted
+5_5_7    https://files.jrsoftware.org/is/5/isetup-5.5.7.exe                                         plain,encrypted,password,plain-zip,plain-bzip,spanning
+5_0_0    https://files.jrsoftware.org/is/5/isetup-5.0.0-beta.exe                                    plain
+5_0_2    https://files.jrsoftware.org/is/5/isetup-5.0.2-beta.exe                                    plain
+5_0_3    https://files.jrsoftware.org/is/5/isetup-5.0.3-beta.exe                                    plain
+5_1_1    https://files.jrsoftware.org/is/5/isetup-5.1.1-beta.exe                                    plain
+5_1_6    https://files.jrsoftware.org/is/5/isetup-5.1.6.exe                                         plain
+5_1_9    https://files.jrsoftware.org/is/5/isetup-5.1.9.exe                                         plain
+5_1_12   https://files.jrsoftware.org/is/5/isetup-5.1.12.exe                                        plain
+5_2_0    https://files.jrsoftware.org/is/5/isetup-5.2.0.exe                                         plain
+5_2_2    https://files.jrsoftware.org/is/5/isetup-5.2.2.exe                                         plain
+5_3_2    https://files.jrsoftware.org/is/5/isetup-5.3.2-beta.exe                                    plain
+5_3_2u   https://files.jrsoftware.org/is/5/isetup-5.3.2-beta-unicode.exe                            plain
+5_3_4    https://files.jrsoftware.org/is/5/isetup-5.3.4.exe                                         plain
+5_3_4u   https://files.jrsoftware.org/is/5/isetup-5.3.4-unicode.exe                                 plain
+5_3_5    https://files.jrsoftware.org/is/5/isetup-5.3.5.exe                                         plain
+5_3_5u   https://files.jrsoftware.org/is/5/isetup-5.3.5-unicode.exe                                 plain
+5_3_6    https://files.jrsoftware.org/is/5/isetup-5.3.6.exe                                         plain
+5_3_6u   https://files.jrsoftware.org/is/5/isetup-5.3.6-unicode.exe                                 plain
+5_3_7    https://files.jrsoftware.org/is/5/isetup-5.3.7.exe                                         plain
+5_3_7u   https://files.jrsoftware.org/is/5/isetup-5.3.7-unicode.exe                                 plain
+5_3_8    https://files.jrsoftware.org/is/5/isetup-5.3.8.exe                                         plain
+5_3_8u   https://files.jrsoftware.org/is/5/isetup-5.3.8-unicode.exe                                 plain
+5_3_9    https://files.jrsoftware.org/is/5/isetup-5.3.9.exe                                         plain
+5_3_9u   https://files.jrsoftware.org/is/5/isetup-5.3.9-unicode.exe                                 plain
+5_3_11a  https://files.jrsoftware.org/is/5/isetup-5.3.11.exe                                        plain
+5_4_3a   https://files.jrsoftware.org/is/5/isetup-5.4.3.exe                                         plain
+5_5_5a   https://files.jrsoftware.org/is/5/isetup-5.5.5.exe                                         plain
+5_5_6    https://files.jrsoftware.org/is/5/isetup-5.5.6.exe                                         plain
+5_5_6u   https://files.jrsoftware.org/is/5/isetup-5.5.6-unicode.exe                                 plain
+5_5_8u   https://files.jrsoftware.org/is/5/isetup-5.5.8-unicode.exe                                 plain
+5_6_1    https://files.jrsoftware.org/is/5/innosetup-5.6.1.exe                                      plain
+5_6_1u   https://files.jrsoftware.org/is/5/innosetup-5.6.1-unicode.exe                              plain
 6_0_0u   https://github.com/jrsoftware/issrc/releases/download/is-6_0_0/innosetup-6.0.0-beta.exe   plain,encrypted
 6_1_0    https://github.com/jrsoftware/issrc/releases/download/is-6_1_0/innosetup-6.1.0-beta.exe   full
 6_3_0    https://github.com/jrsoftware/issrc/releases/download/is-6_3_0/innosetup-6.3.0.exe        plain,encrypted
 6_4_0    https://github.com/jrsoftware/issrc/releases/download/is-6_4_0/innosetup-6.4.0.exe        full
-6_4_3    https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe        plain,encrypted,code
+6_4_2    https://github.com/jrsoftware/issrc/releases/download/is-6_4_2/innosetup-6.4.2.exe        plain,encrypted,full
+6_4_3    https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe        plain,encrypted,code,password
+6_5_1    https://github.com/jrsoftware/issrc/releases/download/is-6_5_1/innosetup-6.5.1.exe         plain,spanning
 6_5_2    https://github.com/jrsoftware/issrc/releases/download/is-6_5_2/innosetup-6.5.2.exe        plain,encrypted,encrypted-full,alt
-6_6_1    https://github.com/jrsoftware/issrc/releases/download/is-6_6_1/innosetup-6.6.1.exe        plain,encrypted,encrypted-full
-6_7_0    https://github.com/jrsoftware/issrc/releases/download/is-6_7_0/innosetup-6.7.0.exe        plain,encrypted,encrypted-full
-7_0_0_1  https://github.com/jrsoftware/issrc/releases/download/is-7_0_0_2/innosetup-7.0.0-preview-3-x86.exe  plain,encrypted,encrypted-full
+6_6_0    https://github.com/jrsoftware/issrc/releases/download/is-6_6_0/innosetup-6.6.0.exe         plain
+6_6_1    https://github.com/jrsoftware/issrc/releases/download/is-6_6_1/innosetup-6.6.1.exe        plain,encrypted,encrypted-full,modern
+6_7_0    https://github.com/jrsoftware/issrc/releases/download/is-6_7_0/innosetup-6.7.0.exe        plain,encrypted,encrypted-full,modern
+7_0_0p2  https://github.com/jrsoftware/issrc/releases/download/is-7_0_0_1/innosetup-7.0.0-preview-2-x86.exe encrypted,encrypted-full,password
+7_0_0_1  https://github.com/jrsoftware/issrc/releases/download/is-7_0_0_2/innosetup-7.0.0-preview-3-x86.exe  plain,encrypted,encrypted-full,password
+7_0_2    https://github.com/jrsoftware/issrc/releases/download/is-7_0_2/innosetup-7.0.2-x86.exe    plain,encrypted,encrypted-full,full,password
+7_1_1    https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x86.exe    plain,encrypted,encrypted-full,full,password,plain-x64,full-x64,plain-zip,plain-bzip,plain-none,modern,spanning
