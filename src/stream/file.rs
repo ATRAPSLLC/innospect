@@ -1,0 +1,207 @@
+//! [`FileReader`] - streaming `std::io::Read` for one extracted
+//! file's content.
+//!
+//! Pipeline (per innoextract `stream/file.cpp`):
+//!
+//! ```text
+//! [ chunk decompressed bytes (cached) ]
+//!         │
+//!         │  (slice [chunk_sub_offset .. chunk_sub_offset + original_size])
+//!         ▼
+//! [ raw file bytes ]
+//!         │
+//!         │  (optional BCJ inverse if CallInstructionOptimized flag set)
+//!         ▼
+//! [ post-filter bytes ]  ──▶  running checksum hasher
+//!         │
+//!         ▼
+//!   caller's `Read::read` buffer
+//! ```
+//!
+//! BCJ runs on the **whole file** before the first `read` call -
+//! we copy the slice into an owned buffer (so we can mutate it in
+//! place) and apply the filter once. Streaming `read` then drains
+//! that buffer, feeding the hasher incrementally and verifying at
+//! EOF.
+
+use std::io::{self, Read};
+
+use crate::{
+    error::Error,
+    records::dataentry::{DataEntry, DataFlag},
+    stream::{bcj, checksum::Hasher},
+    version::Version,
+};
+
+/// Streaming reader for one extracted file. Implements
+/// [`std::io::Read`].
+///
+/// On EOF (the file's final byte yielded), the recorded checksum is
+/// verified. A mismatch surfaces as `io::Error` on the **next**
+/// `read` call after exhaustion (per the `Read` trait contract:
+/// finite reads succeed, errors surface separately).
+pub struct FileReader<'a> {
+    /// Source bytes. Owned when BCJ ran (we mutated in-place);
+    /// borrowed otherwise.
+    bytes: FileBytes<'a>,
+    pos: usize,
+    hasher: Option<Hasher>,
+    /// Set once finalized; kept so a duplicate `read` after error
+    /// keeps returning the same error rather than panicking.
+    finalize_error: Option<Error>,
+}
+
+enum FileBytes<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
+}
+
+impl<'a> FileBytes<'a> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(s) => s,
+            Self::Owned(v) => v.as_slice(),
+        }
+    }
+}
+
+/// Opens a reader over one file: slices the chunk's decompressed
+/// bytes to this file's range, applying BCJ if the flag is set,
+/// and arming the checksum hasher.
+pub fn open<'a>(
+    chunk_bytes: &'a [u8],
+    data: &DataEntry,
+    version: &Version,
+) -> Result<FileReader<'a>, Error> {
+    let start = usize::try_from(data.chunk_sub_offset).map_err(|_| Error::Overflow {
+        what: "chunk_sub_offset",
+    })?;
+    let len = usize::try_from(data.original_size).map_err(|_| Error::Overflow {
+        what: "original_size",
+    })?;
+    let end = start.checked_add(len).ok_or(Error::Overflow {
+        what: "file end offset",
+    })?;
+    let slice = chunk_bytes
+        .get(start..end)
+        .ok_or(Error::ChunkSizeMismatch {
+            expected: end as u64,
+            actual: chunk_bytes.len() as u64,
+        })?;
+
+    let bytes = if data.flags.contains(&DataFlag::CallInstructionOptimized) {
+        let mut owned = slice.to_vec();
+        let filter = bcj::Filter::for_version(version);
+        filter.apply(&mut owned)?;
+        FileBytes::Owned(owned)
+    } else {
+        FileBytes::Borrowed(slice)
+    };
+
+    Ok(FileReader {
+        bytes,
+        pos: 0,
+        hasher: Some(Hasher::from_data_checksum(&data.checksum)),
+        finalize_error: None,
+    })
+}
+
+impl<'a> FileReader<'a> {
+    /// Length of the file content (uncompressed, post-filter).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bytes.as_slice().len()
+    }
+
+    /// Whether the file has zero content.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<'a> Read for FileReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // If we already finalized with an error, surface it again.
+        if let Some(err) = self.finalize_error.as_ref() {
+            return Err(io::Error::other(err.to_string()));
+        }
+
+        let src = self.bytes.as_slice();
+        let remaining = src.get(self.pos..).unwrap_or(&[]);
+        if remaining.is_empty() {
+            // Already at EOF. Finalize the hasher if we haven't yet.
+            if let Some(h) = self.hasher.take()
+                && let Err(e) = h.finalize()
+            {
+                let msg = e.to_string();
+                self.finalize_error = Some(e);
+                return Err(io::Error::other(msg));
+            }
+            return Ok(0);
+        }
+
+        let n = remaining.len().min(buf.len());
+        let chunk = remaining.get(..n).unwrap_or(&[]);
+        let dst = buf.get_mut(..n).unwrap_or(&mut []);
+        dst.copy_from_slice(chunk);
+
+        if let Some(h) = self.hasher.as_mut() {
+            h.update(chunk);
+        }
+
+        self.pos = self.pos.saturating_add(n);
+        Ok(n)
+    }
+}
+
+impl<'a> std::fmt::Debug for FileReader<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileReader")
+            .field("len", &self.len())
+            .field("pos", &self.pos)
+            .field("hasher_active", &self.hasher.is_some())
+            .field(
+                "finalize_error",
+                &self.finalize_error.as_ref().map(ToString::to_string),
+            )
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::dataentry::{DataChecksum, SignMode};
+
+    /// A file that ends past its decompressed chunk is reported as such,
+    /// with where it ends and how long the chunk is.
+    #[test]
+    fn file_past_the_chunk_end_is_a_size_mismatch() {
+        let data = DataEntry {
+            first_slice: 0,
+            last_slice: 0,
+            start_offset: 0,
+            chunk_sub_offset: 4,
+            original_size: 8,
+            chunk_compressed_size: 0,
+            checksum: DataChecksum::Sha256([0u8; 32]),
+            timestamp_seconds: 0,
+            timestamp_nanos: 0,
+            file_version: 0,
+            flags: std::collections::HashSet::new(),
+            flags_raw: vec![0],
+            sign_mode: SignMode::NoSetting,
+            sign_mode_raw: 0,
+        };
+        let version = crate::upstream::version("6.4.3", true);
+        assert!(matches!(
+            open(&[0u8; 10], &data, &version),
+            Err(Error::ChunkSizeMismatch {
+                expected: 12,
+                actual: 10
+            })
+        ));
+        assert!(open(&[0u8; 12], &data, &version).is_ok());
+    }
+}

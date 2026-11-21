@@ -1,24 +1,19 @@
-//! `TSetupFileEntry` - `[Files]` directive entry.
+//! `TSetupFileEntry`: one file Setup installs, from a `[Files]` entry, or
+//! the uninstaller itself ([`FileEntryType::UninstExe`]). A wildcard or
+//! `recursesubdirs` entry is expanded by the compiler, so each matched file
+//! has an entry of its own. The bytes live elsewhere: [`FileEntry::location_index`]
+//! names the [`crate::records::dataentry::DataEntry`] that says where in
+//! setup-1 they are, and [`crate::InnoInstaller::extract`] reads them.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupFileEntry = packed record
-//!     SourceFilename, DestName, InstallFontName,
-//!         StrongAssemblyName: AnsiString;     // strong_asm 5.2.5+
-//!     [ItemConditions]
-//!     [WindowsVersionRange]
-//!     LocationEntry: Integer;
-//!     Attribs: Cardinal;
-//!     ExternalSize: Integer64;                // u32 pre-4.0
-//!     CopyMode: TSetupFileCopyMode;          // pre-3.0.5 only
-//!     PermissionsEntry: SmallInt;             // since 4.1.0
-//!     Options: TSetupFileOptions;             // variable bits
-//!     FileType: TSetupFileType;               // u8 enum
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/file.cpp`.
+//! On disk (`SECompressedBlockWrite`): the string fields in the order below,
+//! each a u32 byte length and its data (UTF-16LE in Unicode builds); from
+//! 6.5.0 the `Verification` record (an `AnsiString`, a SHA-256 and a type
+//! byte); the Windows version range; then `LocationEntry`, `Attribs`,
+//! `ExternalSize`, before 3.0.5 a `CopyMode` byte, from 4.1.0
+//! `PermissionsEntry`, from SetupID 7.0.0.3 `Bitness`, the `Options` set
+//! and `FileType`. Reader reference: innoextract `setup/file.cpp`; every
+//! layout is checked against upstream's own declarations by the
+//! `crate::upstream` tests.
 
 use std::collections::HashSet;
 
@@ -30,20 +25,23 @@ use crate::{
     },
     util::{
         encoding::{read_ansi_bytes, read_setup_string},
-        read::Reader,
+        read::{FromReader, Reader},
     },
     version::Version,
 };
 
-/// `TSetupFileType`.
+/// `FileType`: what an entry installs (`TSetupFileEntry.FileType`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FileEntryType {
-    /// `ftUserFile` - regular file from `[Files]`.
+    /// `ftUserFile`: a file from a `[Files]` entry.
     UserFile,
-    /// `ftUninstExe` - the uninstaller binary.
+    /// `ftUninstExe`: the uninstaller, `unins000.exe`, which the compiler
+    /// adds itself. Its bytes are Setup's own executable, rebuilt by
+    /// [`crate::InnoInstaller::extract_uninstaller`]; it has no data entry.
     UninstExe,
-    /// `ftRegSvrExe` - the embedded RegSvr (pre-5.0 win32 only).
+    /// `ftRegSvrExe`: the helper that registers DLLs after a restart (32-bit
+    /// builds before 5.0.0).
     RegSvrExe,
 }
 
@@ -53,48 +51,125 @@ stable_name_enum!(FileEntryType, {
     Self::RegSvrExe => "reg_svr_exe",
 });
 
-/// `TSetupFileOptions` flag bits.
+/// `TSetupFileEntry.Options`: the entry's `Flags:` that reach Setup. Flags
+/// only the compiler acts on (`nocompression`, `solidbreak`, `sign`, the
+/// sort flags, ...) are not stored here; `touch`, `noencryption` and the
+/// signing state are on the file's
+/// [`crate::records::dataentry::DataEntry`] instead.
+///
+/// Each variant names its Pascal member and the script flag that sets it.
+/// The version is when the bit appeared.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum FileFlag {
+    /// `foConfirmOverwrite` (`confirmoverwrite`): ask before replacing an
+    /// existing file.
     ConfirmOverwrite,
+    /// `foUninsNeverUninstall` (`uninsneveruninstall`): never remove the
+    /// file at uninstall.
     NeverUninstall,
+    /// `foRestartReplace` (`restartreplace`): a file in use is replaced at
+    /// the next restart (`MoveFileEx`) instead of failing.
     RestartReplace,
+    /// `foDeleteAfterInstall` (`deleteafterinstall`): install the file, then
+    /// delete it when Setup finishes, for temporary helpers.
     DeleteAfterInstall,
+    /// `foRegisterServer` (`regserver`): call `DllRegisterServer` after
+    /// installing, `DllUnregisterServer` at uninstall.
     RegisterServer,
+    /// `foRegisterTypeLib` (`regtypelib`): register the type library.
     RegisterTypeLib,
+    /// `foSharedFile` (`sharedfile`): reference-counted under `SharedDLLs`;
+    /// removed only when no application uses it.
     SharedFile,
-    /// Pre-2.0.0 only.
+    /// `foIsReadmeFile` (`isreadme`): offer to open the file on the Setup
+    /// Completed page (before 2.0.0; later releases make `isreadme` a
+    /// `[Run]` entry).
     IsReadmeFile,
+    /// `foCompareTimeStamp` (`comparetimestamp`; `foCompareTimeStampAlso`
+    /// before 3.0.5): replace an existing file by comparing time stamps
+    /// when version information does not decide.
     CompareTimeStamp,
+    /// `foFontIsntTrueType` (`fontisnttruetype`): the `FontInstall` font is
+    /// not TrueType.
     FontIsNotTrueType,
+    /// `foSkipIfSourceDoesntExist` (`skipifsourcedoesntexist`): with
+    /// `external`, silently skip a missing source (1.2.5+).
     SkipIfSourceDoesntExist,
+    /// `foOverwriteReadOnly` (`overwritereadonly`): replace a read-only file
+    /// without asking (1.2.6+).
     OverwriteReadOnly,
+    /// `foOverwriteSameVersion`: replace an existing file of the same version
+    /// without comparing contents (1.3.21+). The compiler sets it on the
+    /// uninstaller's own entry, which Setup modifies after extracting.
     OverwriteSameVersion,
+    /// `foCustomDestName`: the entry gave `DestName:`, so
+    /// [`FileEntry::destination`] ends in that name rather than the source
+    /// file's (1.3.21+).
     CustomDestName,
+    /// `foOnlyIfDestFileExists` (`onlyifdestfileexists`): install only over
+    /// an existing file of the same name, for patches (1.3.25+).
     OnlyIfDestFileExists,
+    /// `foNoRegError` (`noregerror`): no error message when `regserver` /
+    /// `regtypelib` fails (2.0.5+).
     NoRegError,
+    /// `foUninsRestartDelete` (`uninsrestartdelete`): a file in use at
+    /// uninstall is deleted at the next restart (3.0.1+).
     UninsRestartDelete,
+    /// `foOnlyIfDoesntExist` (`onlyifdoesntexist`): install only if no such
+    /// file exists (3.0.5+; before, the `CopyMode` byte, which this crate
+    /// maps to the same flag).
     OnlyIfDoesntExist,
+    /// `foIgnoreVersion` (`ignoreversion`): replace an existing file whatever
+    /// its version (3.0.5+, or from `CopyMode` before).
     IgnoreVersion,
+    /// `foPromptIfOlder` (`promptifolder`): ask before replacing a newer file
+    /// with an older one (3.0.5+, or from `CopyMode` before).
     PromptIfOlder,
+    /// `foDontCopy` (`dontcopy`): compile the file in but do not install it;
+    /// `[Code]` extracts it with `ExtractTemporaryFile` (4.0.0+).
     DontCopy,
+    /// `foUninsRemoveReadOnly` (`uninsremovereadonly`): clear the read-only
+    /// attribute before deleting at uninstall (4.0.5+).
     UninsRemoveReadOnly,
+    /// `foRecurseSubDirsExternal` (`recursesubdirs` with `external`): Setup,
+    /// not the compiler, searches the source's subdirectories (4.1.8+).
     RecurseSubDirsExternal,
+    /// `foReplaceSameVersionIfContentsDiffer` (`replacesameversion`): replace
+    /// a file of the same version when the contents differ (4.2.1+).
     ReplaceSameVersionIfContentsDiffer,
+    /// `foDontVerifyChecksum` (`dontverifychecksum`): skip the checksum after
+    /// extraction, for files patched after compiling (4.2.5+).
     DontVerifyChecksum,
+    /// `foUninsNoSharedFilePrompt` (`uninsnosharedfileprompt`): remove a
+    /// shared file whose count reaches zero without asking (5.0.3+).
     UninsNoSharedFilePrompt,
+    /// `foCreateAllSubDirs` (`createallsubdirs`): create the empty
+    /// directories `recursesubdirs` finds (SetupID 5.0.4+).
     CreateAllSubDirs,
+    /// `fo32Bit` (`32bit`): install to the 32-bit view of the file system
+    /// (5.1.2 to SetupID 7.0.0.2; then [`FileEntry::bitness`]).
     Bits32,
+    /// `fo64Bit` (`64bit`): install to the 64-bit view (5.1.2 to 7.0.0.2;
+    /// then [`FileEntry::bitness`]).
     Bits64,
+    /// `foExternalSizePreset`: the entry gives `ExternalSize`, so Setup does
+    /// not measure the external file (5.2.0+).
     ExternalSizePreset,
+    /// `foSetNTFSCompression` (`setntfscompression`): turn NTFS compression
+    /// on for the file (5.2.0+).
     SetNtfsCompression,
+    /// `foUnsetNTFSCompression` (`unsetntfscompression`): turn it off
+    /// (5.2.0+).
     UnsetNtfsCompression,
+    /// `foGacInstall` (`gacinstall`): install into the .NET Global Assembly
+    /// Cache (5.2.5+).
     GacInstall,
-    /// 6.5.0+ - file content fetched at install time.
+    /// `foDownload` (`download`): Setup downloads `Source`, a URL, instead of
+    /// copying a file (6.5.0+).
     Download,
-    /// 6.5.0+ - payload is a 7-Zip archive to extract.
+    /// `foExtractArchive` (`extractarchive`): Setup extracts the archive
+    /// into `DestDir` instead of copying it (6.5.0+).
     ExtractArchive,
 }
 
@@ -136,86 +211,113 @@ stable_flag_enum!(FileFlag, {
     ExtractArchive => "extract_archive",
 });
 
-/// Parsed `TSetupFileEntry`.
+/// One `[Files]` entry (`TSetupFileEntry`). A string field the version does
+/// not have is empty; paths and names may contain constants such as `{app}`,
+/// unexpanded.
 #[derive(Clone, Debug)]
 pub struct FileEntry {
-    /// `Source:` directive - path on the build machine where the
-    /// file came from (with Inno constants like `{tmp}`).
+    /// `Source:` (Pascal `SourceFilename`): for an `external` file the path
+    /// Setup copies from at install time, or with [`FileFlag::Download`] the
+    /// URL. Empty for a file compiled into the installer.
     pub source: String,
-    /// `DestName:` directive - installation path.
+    /// `DestDir:` plus the file name (Pascal `DestName`): where the file is
+    /// installed, e.g. `{app}\MyProg.exe`, with literal braces in the name
+    /// doubled (`{{`). The name is `DestName:` when given
+    /// ([`FileFlag::CustomDestName`]), else the source file's. An `external`
+    /// entry without `DestName:` stores only the directory: Setup appends
+    /// the name of each file it finds at install time.
     pub destination: String,
-    /// `FontInstall:` directive - empty unless this is a font.
+    /// `FontInstall:`: the font's registry name when the file is a font to
+    /// register; empty otherwise.
     pub install_font_name: String,
-    /// `StrongAssemblyName:` directive (5.2.5+).
+    /// `StrongAssemblyName:`: the strong name the uninstaller removes from
+    /// the Global Assembly Cache, with [`FileFlag::GacInstall`] (5.2.5+).
     pub strong_assembly_name: String,
-    /// Shared conditions + Windows version range.
+    /// `Components:` .. `AfterInstall:` and `MinVersion:` /
+    /// `OnlyBelowVersion:`.
     pub item: ItemBase,
-    /// `Excludes:` directive (6.5.0+) - empty on older versions.
+    /// `Excludes:`: comma-separated patterns `recursesubdirs` skips for an
+    /// `external` source (6.5.0+).
     pub excludes: String,
-    /// `DownloadISSigSource:` directive (6.5.0+).
+    /// `DownloadISSigSource:`: URL of the `.issig` signature that verifies a
+    /// download (6.5.0+).
     pub download_iss_sig_source: String,
-    /// `DownloadUserName:` directive (6.5.0+).
+    /// `DownloadUserName:`: basic-authentication user for the download
+    /// (6.5.0+).
     pub download_user_name: String,
-    /// `DownloadPassword:` directive (6.5.0+).
+    /// `DownloadPassword:`: basic-authentication password for the download,
+    /// stored in clear even in an encrypted installer (6.5.0+).
     pub download_password: String,
-    /// `ExtractArchivePassword:` directive (6.5.0+).
+    /// `ExtractArchivePassword:`: password of the archive
+    /// [`FileFlag::ExtractArchive`] extracts, stored in clear (6.5.0+).
     pub extract_archive_password: String,
-    /// `Verification` field (6.5.0+). Empty
-    /// [`FileVerification::iss_sig_allowed_keys`] etc. on older versions.
+    /// `Verification`: how Setup checks the file before installing it
+    /// (6.5.0+; default before).
     pub verification: FileVerification,
-    /// Index into the file-location list (block-2 `data_entries`).
+    /// `LocationEntry`: index into [`crate::InnoInstaller::file_locations`]
+    /// of the data entry holding the bytes; `u32::MAX` (-1) when there is
+    /// none (the uninstaller, external and downloaded files). See
+    /// [`crate::InnoInstaller::file_location_for`].
     pub location_index: u32,
-    /// Win32 file attributes mask.
+    /// `Attribs:`: Windows file attributes Setup sets after installing
+    /// (`FILE_ATTRIBUTE_READONLY` 0x1, `_HIDDEN` 0x2, `_SYSTEM` 0x4,
+    /// `_NOT_CONTENT_INDEXED` 0x2000); 0 for none.
     pub attributes: u32,
-    /// `ExternalSize:` (`Source: external` directive). 0 for embedded
-    /// files.
+    /// `ExternalSize:`: the size in bytes an `external` or downloaded file
+    /// counts toward the disk space shown (32-bit before 4.0.0); 0 for a
+    /// compiled-in file.
     pub external_size: u64,
-    /// Index into [`crate::InnoInstaller::permissions`]; `-1` =
-    /// no entry. 4.1.0+.
+    /// `PermissionsEntry`: index into [`crate::InnoInstaller::permissions`]
+    /// of the ACL `Permissions:` grants; -1 for none (4.1.0+; -1 before).
     pub permission_index: i16,
-    /// `Bitness` enum (6.7.0+; replaces the `Bits32`/`Bits64` flag
-    /// bits). On older versions the field stays `None`.
+    /// `Bitness`: the file-system view the file goes to (SetupID 7.0.0.3+,
+    /// replacing [`FileFlag::Bits32`] / [`FileFlag::Bits64`]). `None` before,
+    /// or for a value this crate does not know.
     pub bitness: Option<Bitness>,
-    /// Raw bitness byte (or 0 when absent).
+    /// `Bitness` as stored; 0 when the version has no such byte.
     pub bitness_raw: u8,
-    /// Decoded options. May include synthetic
-    /// [`FileFlag::PromptIfOlder`] / [`FileFlag::IgnoreVersion`] /
-    /// [`FileFlag::OnlyIfDoesntExist`] derived from the pre-3.0.5
-    /// `CopyMode` byte; raw bits are still in [`Self::options_raw`].
+    /// `Options`, decoded. Before 3.0.5 the copy behaviour was the
+    /// `CopyMode` byte, which adds [`FileFlag::PromptIfOlder`],
+    /// [`FileFlag::IgnoreVersion`] or [`FileFlag::OnlyIfDoesntExist`] here;
+    /// [`Self::options_raw`] holds only the set as stored.
     pub flags: HashSet<FileFlag>,
-    /// Raw `Options` bytes.
+    /// `Options` as stored: the set's bytes, whose size grows with the
+    /// number of flags the version defines.
     pub options_raw: Vec<u8>,
-    /// `FileType:` enum.
+    /// `FileType`, decoded; `None` for a value this crate does not know.
     pub file_type: Option<FileEntryType>,
-    /// Raw file-type byte.
+    /// `FileType` as stored.
     pub file_type_raw: u8,
 }
 
-/// `TSetupFileVerification` - added at Inno Setup 6.5.0. Holds the
-/// signing-key allowlist and the file content hash.
+/// `TSetupFileVerification` (6.5.0+): how Setup checks a file's bytes
+/// before installing it, beyond the data entry's checksum. Used for
+/// external and downloaded files, whose bytes the compiler never saw.
 #[derive(Clone, Debug, Default)]
 pub struct FileVerification {
-    /// `ISSigAllowedKeys` - newline-separated list of allowed
-    /// signature keys (raw bytes; 6.5.0+).
+    /// `ISSigAllowedKeys:`: which `[ISSigKeys]` entries may have signed the
+    /// file, as stored by the compiler (an `AnsiString`; empty means any).
     pub iss_sig_allowed_keys: Vec<u8>,
-    /// SHA-256 of the file content. All zeros when verification
-    /// type is `None`.
+    /// `Hash:`: the SHA-256 the file must have with
+    /// [`FileVerificationKind::Hash`]; zeros otherwise.
     pub hash: [u8; 32],
-    /// Verification type byte.
+    /// `Typ`, decoded; `None` for a value this crate does not know.
     pub kind: Option<FileVerificationKind>,
-    /// Raw verification-type byte.
+    /// `Typ` as stored.
     pub kind_raw: u8,
 }
 
-/// `TSetupFileVerificationType`.
+/// `TSetupFileVerificationType`: which check [`FileVerification`] makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FileVerificationKind {
-    /// `fvNone` - no verification.
+    /// `fvNone`: no check beyond the checksum.
     None,
-    /// `fvHash` - SHA-256 hash check.
+    /// `fvHash` (`Hash:` parameter): the file's SHA-256 must be
+    /// [`FileVerification::hash`].
     Hash,
-    /// `fvISSig` - Inno Setup signature check.
+    /// `fvISSig` (`issigverify` flag): the file must carry a valid `.issig`
+    /// signature by one of the allowed `[ISSigKeys]`.
     IsSig,
 }
 
@@ -225,7 +327,7 @@ stable_name_enum!(FileVerificationKind, {
     Self::IsSig => "issig",
 });
 
-impl FileEntry {
+impl FromReader for FileEntry {
     /// Reads one `TSetupFileEntry`. Dispatches on version since the
     /// 6.5.0 release inlined 5 new String fields between the
     /// conditions and the version range, and added a `Verification`
@@ -234,7 +336,7 @@ impl FileEntry {
     /// # Errors
     ///
     /// String / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let source = read_setup_string(reader, version, "File.Source")?;
         let destination = read_setup_string(reader, version, "File.Destination")?;
         let install_font_name = read_setup_string(reader, version, "File.FontName")?;
@@ -304,8 +406,12 @@ impl FileEntry {
             winver,
         };
 
-        let location_index = reader.u32_le("File.LocationIndex")?;
-        let attributes = reader.u32_le("File.Attributes")?;
+        // `Integer`s: -1 for no location is `u32::MAX` here whatever the
+        // build's width.
+        let location_index = reader
+            .native_i32(version, "File.LocationIndex")?
+            .cast_unsigned();
+        let attributes = reader.native_u32(version, "File.Attributes")?;
         let external_size = if version.at_least(4, 0, 0) {
             reader.u64_le("File.ExternalSize")?
         } else {
@@ -356,8 +462,8 @@ impl FileEntry {
 
         let table = file_flag_table(version);
         let bit_count = file_flag_bit_count(version, table.len());
-        let raw = reader.set_bytes(bit_count, true, "File.Options")?;
-        let mut flags = super::decode_packed_flags(&raw, &table);
+        let raw = reader.set_bytes(bit_count, version, "File.Options")?;
+        let mut flags = crate::util::flags::decode_packed_flags(&raw, &table);
         flags.extend(synthetic);
 
         let file_type_raw = reader.u8("File.FileType")?;
@@ -421,8 +527,9 @@ impl FileEntryType {
 fn decode_file_type(b: u8, version: &Version) -> Option<FileEntryType> {
     // Byte→variant mapping lives in `FileEntryType::from_raw`; this only
     // applies the version gate: `RegSvrExe` (byte 2) was dropped in 5.0.0.
+    // A 16-bit installer (1.2.x) has no `ftRegSvrExe` either.
     match FileEntryType::from_raw(b)? {
-        FileEntryType::RegSvrExe if version.at_least(5, 0, 0) => None,
+        FileEntryType::RegSvrExe if version.at_least(5, 0, 0) || version.is_16bit() => None,
         kind => Some(kind),
     }
 }
@@ -433,10 +540,16 @@ fn file_flag_table(version: &Version) -> Vec<FileFlag> {
         FileFlag::NeverUninstall,
         FileFlag::RestartReplace,
         FileFlag::DeleteAfterInstall,
-        FileFlag::RegisterServer,
-        FileFlag::RegisterTypeLib,
-        FileFlag::SharedFile,
     ];
+    // COM registration and shared-DLL counts are Win32; a 16-bit installer
+    // (1.2.x) has neither.
+    if !version.is_16bit() {
+        t.extend([
+            FileFlag::RegisterServer,
+            FileFlag::RegisterTypeLib,
+            FileFlag::SharedFile,
+        ]);
+    }
     if !version.at_least(2, 0, 0) && !version.is_isx() {
         t.push(FileFlag::IsReadmeFile);
     }
@@ -484,7 +597,9 @@ fn file_flag_table(version: &Version) -> Vec<FileFlag> {
     if version.at_least(5, 0, 3) {
         t.push(FileFlag::UninsNoSharedFilePrompt);
     }
-    if version.at_least(5, 1, 0) {
+    // 5.0.6 appended `foCreateAllSubDirs` but kept SetupID 5.0.4; the set
+    // keeps its size, so 5.0.4 and 5.0.5 simply never set the bit.
+    if version.at_least(5, 0, 4) {
         t.push(FileFlag::CreateAllSubDirs);
     }
     // SetupBinVersion 7.0.0.3 (issrc commit `3553e3b7`) moves the

@@ -2,9 +2,9 @@
 //!
 //! Reads the typed record entries that follow `TSetupHeader` in the
 //! decompressed `setup-0` stream. Each submodule maps to one Pascal
-//! record type from `Shared.Struct.pas`. Cross-version conditionals
-//! are documented per-record; the canonical reference is
-//! `research-notes/04-setup-records.md`.
+//! record type from `Shared.Struct.pas`. Each documents how its layout
+//! changes with the version; the `crate::upstream` tests check every one
+//! against upstream's declaration for each SetupID marker.
 //!
 //! [`windows`] holds the bit-packed-set helpers used by both the
 //! fixed numeric tail of `TSetupHeader` and the per-record
@@ -33,23 +33,3 @@ pub mod run;
 pub mod task;
 pub mod type_;
 pub mod windows;
-
-use std::collections::HashSet;
-use std::hash::Hash;
-
-/// Decodes a bit-packed flag set: bit `i` of `raw` (LSB-first within
-/// each byte) selects `table[i]`. Bits past `table.len()` are ignored;
-/// trailing bytes past `raw.len()` contribute nothing.
-pub(crate) fn decode_packed_flags<T: Copy + Eq + Hash>(raw: &[u8], table: &[T]) -> HashSet<T> {
-    let mut out = HashSet::new();
-    for (bit, flag) in table.iter().enumerate() {
-        let byte_idx = bit / 8;
-        let bit_idx = bit % 8;
-        if let Some(b) = raw.get(byte_idx)
-            && (b >> bit_idx) & 1 == 1
-        {
-            out.insert(*flag);
-        }
-    }
-    out
-}

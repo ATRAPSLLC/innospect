@@ -1,39 +1,36 @@
-//! `TSetupTypeEntry` - install-type definition (full / compact /
-//! custom / user-named) read from setup-0 block 1.
+//! `TSetupTypeEntry`: one setup type, a named selection of components the
+//! user picks on the wizard's Select Components page. The compiler adds
+//! the three default types when the script has components but no
+//! `[Types]` section.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupTypeEntry = packed record
-//!     Name, Description, Languages, Check: String;
-//!     MinVersion, OnlyBelowVersion: TSetupVersionData;
-//!     Options: TSetupTypeOptions;     // 1 bit → 1 byte
-//!     Typ: TSetupTypeType;            // u8 enum
-//!     Size: Integer64;                // i64 (was i32 before 4.0)
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/type.cpp`.
+//! On disk (`SECompressedBlockWrite`): `Name`, `Description`, from 4.0.1
+//! `Languages`, from 4.0.0 `Check` (`CheckOnce` from 6.5.0), the Windows
+//! version range, the `Options` set, from 4.0.3 `Typ`, and `Size` (64-bit
+//! from 4.0.0). Reader reference: innoextract `setup/type.cpp`; every
+//! layout is checked against upstream's own declarations by the
+//! `crate::upstream` tests.
 
 use crate::{
     error::Error,
     records::windows::WindowsVersionRange,
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// `TSetupTypeType` - kind of install type.
+/// `Typ` (`TSetupTypeType`): where a setup type came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SetupTypeKind {
-    /// `User` - user-named type defined in `[Types]`.
+    /// `ttUser`: a `[Types]` entry.
     User,
-    /// `DefaultFull` - compiler-emitted "Full installation" entry.
+    /// `ttDefaultFull`: the compiler's default "full" type.
     DefaultFull,
-    /// `DefaultCompact` - compiler-emitted "Compact installation"
-    /// entry.
+    /// `ttDefaultCompact`: the compiler's default "compact" type.
     DefaultCompact,
-    /// `DefaultCustom` - compiler-emitted "Custom installation" entry.
+    /// `ttDefaultCustom`: the compiler's default "custom" type.
     DefaultCustom,
 }
 
@@ -44,41 +41,47 @@ stable_name_enum!(SetupTypeKind, {
     Self::DefaultCustom => "default_custom",
 });
 
-/// Parsed `TSetupTypeEntry`.
+/// One setup type (`TSetupTypeEntry`). A string field the version does not
+/// have is empty.
 #[derive(Clone, Debug)]
 pub struct TypeEntry {
-    /// `Name:` directive value - the type's identifier.
+    /// `Name:`: the type's internal name, which `[Components]` entries list
+    /// in `Types:`.
     pub name: String,
-    /// `Description:` directive value - wizard-shown label.
+    /// `Description:`: the text the wizard shows, constants unexpanded.
     pub description: String,
-    /// `Languages:` filter (semicolon-separated). Inno Setup 4.0.1+.
+    /// `Languages:`: the languages the type is offered in (4.0.1+).
     pub languages: String,
-    /// `Check:` Pascal-expression / function name. Inno Setup 4.0.0+.
+    /// `Check:`: the `[Code]` function deciding whether the type is offered
+    /// (4.0.0+, or any ISX build). From 6.5.0 upstream calls it `CheckOnce`:
+    /// Setup evaluates it once.
     pub check: String,
-    /// MinVersion + OnlyBelowVersion.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
-    /// Raw options byte (`set of TSetupTypeOption`).
+    /// `Options` as stored; bit 0 is `toIsCustom`.
     pub options_raw: u8,
-    /// `True` when `iscustom` flag bit is set.
+    /// `toIsCustom` (`iscustom` flag): the type Setup switches to when the
+    /// user changes the component selection by hand.
     pub is_custom: bool,
-    /// `Typ` enum (4.0.3+; defaulted to `User` on older versions).
+    /// `Typ`, decoded (4.0.3+; [`SetupTypeKind::User`] before). `None` for a
+    /// value this crate does not know.
     pub kind: Option<SetupTypeKind>,
-    /// Raw `Typ` byte.
+    /// `Typ` as stored; 0 when the version has no such byte.
     pub kind_raw: u8,
-    /// `Size` - uncompressed-files total when this type is selected.
-    /// `i64` from 4.0.0+; promoted from `i32` on earlier versions.
+    /// `Size`: the bytes the type's components install, which the compiler
+    /// computes (64-bit from 4.0.0; 2.0.0+).
     pub size: i64,
 }
 
 const FLAG_IS_CUSTOM: u8 = 1;
 
-impl TypeEntry {
+impl FromReader for TypeEntry {
     /// Reads one `TSetupTypeEntry`.
     ///
     /// # Errors
     ///
     /// String decoding / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let name = read_setup_string(reader, version, "Type.Name")?;
         let description = read_setup_string(reader, version, "Type.Description")?;
         let languages = if version.at_least(4, 0, 1) {

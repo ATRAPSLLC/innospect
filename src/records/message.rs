@@ -1,53 +1,45 @@
-//! `TSetupCustomMessageEntry` - `[CustomMessages]` localized
-//! string overrides.
+//! `TSetupCustomMessageEntry`: one `[CustomMessages]` entry, a message the
+//! script defines for its own use (`{cm:Name}`), for one language or all.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupCustomMessageEntry = packed record
-//!     Name: AnsiString;
-//!     Value: AnsiString;
-//!     LangIndex: Integer;     // -1 = default (any language)
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/message.cpp`. The `Value`
-//! bytes are encoded in the codepage of `languages[LangIndex]` (or
-//! the per-installer default codepage when `LangIndex == -1`).
-//! Decoding to a Rust `String` happens above this layer; we surface
-//! the raw bytes here.
+//! On disk (`SECompressedBlockWrite`): `Name`, `Value` (strings, UTF-16LE in
+//! Unicode builds) and `LangIndex`. Reader reference: innoextract
+//! `setup/message.cpp`; every layout is checked against upstream's own
+//! declarations by the `crate::upstream` tests.
 
 use crate::{
     error::Error,
-    util::{encoding::read_ansi_bytes, read::Reader},
+    util::{
+        encoding::read_ansi_bytes,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// Parsed `TSetupCustomMessageEntry`.
+/// One `[CustomMessages]` entry (`TSetupCustomMessageEntry`). The fields are
+/// the bytes as stored: UTF-16LE in Unicode builds, else the code page of
+/// the entry's language.
 #[derive(Clone, Debug)]
 pub struct MessageEntry {
-    /// `Name:` directive (the message ID, e.g. `"WelcomeLabel1"`).
-    /// Encoded in the per-installer default codepage (UTF-8 in
-    /// modern Unicode builds).
+    /// `Name`: the message's name, e.g. `Greeting`, which `{cm:Greeting}`
+    /// expands.
     pub name: Vec<u8>,
-    /// `Value:` directive - localized message body. Encoded in the
-    /// codepage of the entry's language; see [`Self::language`].
+    /// `Value`: the text; `%1`, `%2`, ... are filled from `{cm:...}`
+    /// arguments.
     pub value: Vec<u8>,
-    /// Language index into the parsed [`crate::records::language`]
-    /// list, or `None` when `LangIndex == -1` (default for all
-    /// languages).
+    /// `LangIndex` as an index into [`crate::InnoInstaller::languages`], or
+    /// `None` for a message all languages share (`LangIndex` -1).
     pub language: Option<i32>,
-    /// Raw `LangIndex` value as it appeared on the wire.
+    /// `LangIndex` as stored.
     pub language_raw: i32,
 }
 
-impl MessageEntry {
+impl FromReader for MessageEntry {
     /// Reads one `TSetupCustomMessageEntry`.
     ///
     /// # Errors
     ///
     /// Truncation per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, _version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, _version: &Version) -> Result<Self, Error> {
         let name = read_ansi_bytes(reader, "Message.Name")?;
         let value = read_ansi_bytes(reader, "Message.Value")?;
         let raw = reader.i32_le("Message.LangIndex")?;

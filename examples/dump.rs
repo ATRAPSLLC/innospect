@@ -17,10 +17,39 @@ fn main() {
         process::exit(1);
     });
 
-    let installer = innospect::InnoInstaller::from_bytes(&data).unwrap_or_else(|e| {
-        eprintln!("error parsing Inno Setup installer: {e}");
-        process::exit(1);
-    });
+    let parse = || {
+        innospect::InnoInstaller::from_bytes(&data).unwrap_or_else(|e| {
+            eprintln!("error parsing Inno Setup installer: {e}");
+            process::exit(1);
+        })
+    };
+    // A disk-spanning installer's files are in slice files beside it, under
+    // the names Setup looks for.
+    let probe = parse();
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("setup.exe");
+    let slice_names: Vec<String> = (0..probe.slice_count())
+        .map(|i| probe.slice_file_name(i, file_name))
+        .collect();
+    let slice_data: Vec<Vec<u8>> = slice_names
+        .iter()
+        .map_while(|name| fs::read(dir.join(name)).ok())
+        .collect();
+    let slice_refs: Vec<&[u8]> = slice_data.iter().map(Vec::as_slice).collect();
+    let installer = if slice_refs.is_empty() {
+        parse()
+    } else {
+        parse().with_slices(&slice_refs).unwrap_or_else(|e| {
+            eprintln!("error reading the slice files: {e}");
+            process::exit(1);
+        })
+    };
+    drop(probe);
 
     let v = installer.version();
     println!("== Identification ==");
@@ -124,6 +153,31 @@ fn main() {
         println!("  info_before:         {info_before_len} bytes");
         println!("  info_after:          {info_after_len} bytes");
         println!("  compiled_code_text:  {compiled_len} bytes");
+        for kind in [
+            innospect::WizardImageKind::Large,
+            innospect::WizardImageKind::Small,
+            innospect::WizardImageKind::Back,
+        ] {
+            let sizes: Vec<usize> = installer
+                .wizard_images(kind)
+                .iter()
+                .map(|i| i.len())
+                .collect();
+            let dark = installer
+                .wizard_images_dark(kind)
+                .map(|d| format!(", dark {:?}", d.iter().map(|i| i.len()).collect::<Vec<_>>()))
+                .unwrap_or_default();
+            println!("  wizard images ({kind}): {sizes:?}{dark}");
+        }
+        for (label, dll) in [
+            ("decompressor DLL", installer.decompressor_dll()),
+            ("decryption DLL", installer.decryption_dll()),
+            ("7-Zip DLL", installer.seven_zip_dll()),
+        ] {
+            if let Some(dll) = dll {
+                println!("  {label}: {} bytes", dll.len());
+            }
+        }
 
         let tail = header.tail();
         let tail_size = header
@@ -252,6 +306,93 @@ fn main() {
             "  file_loc[{i}]: orig_size={} compressed={} chunk_offset={} flags={:?}",
             d.original_size, d.chunk_compressed_size, d.chunk_sub_offset, d.flags,
         );
+    }
+
+    for (i, r) in installer.uninstall_runs().iter().enumerate().take(3) {
+        println!(
+            "  uninstall_run[{i}]: cmd={:?} args={:?}",
+            r.name, r.parameters
+        );
+    }
+    for (i, d) in installer.directories().iter().enumerate().take(3) {
+        println!("  dir[{i}]: {:?} flags={:?}", d.name, d.flags);
+    }
+    for (i, e) in installer.ini_entries().iter().enumerate().take(3) {
+        println!(
+            "  ini[{i}]: {:?} [{}] {}={:?}",
+            e.inifile, e.section, e.key, e.value
+        );
+    }
+    for (i, d) in installer.install_deletes().iter().enumerate().take(3) {
+        println!("  install_delete[{i}]: {:?} {:?}", d.name, d.target_type);
+    }
+    for (i, d) in installer.uninstall_deletes().iter().enumerate().take(3) {
+        println!("  uninstall_delete[{i}]: {:?} {:?}", d.name, d.target_type);
+    }
+    for (i, t) in installer.types().iter().enumerate().take(3) {
+        println!("  type[{i}]: {:?} {:?}", t.name, t.description);
+    }
+    for (i, c) in installer.components().iter().enumerate().take(3) {
+        println!("  component[{i}]: {:?} types={:?}", c.name, c.types);
+    }
+    println!(
+        "  messages: {}  permissions: {}  issig keys: {}",
+        installer.messages().len(),
+        installer.permissions().len(),
+        installer.iss_sig_keys().len()
+    );
+
+    println!();
+    println!("== Analysis ==");
+    if let Some(arches) = installer.architecture() {
+        let mut names: Vec<_> = arches.iter().map(|a| a.as_str()).collect();
+        names.sort_unstable();
+        println!("  architectures: {names:?}");
+    }
+    for cmd in installer.exec_commands().take(5) {
+        println!(
+            "  exec ({}): {:?} {:?}",
+            cmd.phase,
+            cmd.filename(),
+            cmd.parameters()
+        );
+    }
+    for op in installer.registry_ops().take(5) {
+        println!(
+            "  registry {}: {} {:?} {:?}",
+            op.kind, op.source.hive, op.source.subkey, op.source.value_name
+        );
+    }
+    for shortcut in installer.shortcuts().take(5) {
+        println!(
+            "  shortcut {:?} -> {:?}",
+            shortcut.icon.name,
+            shortcut.target.map(|f| f.destination.as_str())
+        );
+    }
+    match installer.compiledcode() {
+        Some(Ok(code)) => {
+            let procs = code.procs();
+            println!("  [Code]: {} procs", procs.len());
+            for proc in procs.iter().take(12) {
+                if let innospect::pascalscript::ProcKind::External(ext) = &proc.kind {
+                    let name = String::from_utf8_lossy(ext.name);
+                    let what = installer.inno_api_description(&name).unwrap_or("");
+                    println!("    import {name}: {what}");
+                }
+            }
+        }
+        Some(Err(e)) => println!("  [Code]: {e}"),
+        None => {}
+    }
+
+    if installer.uses_slice_files() {
+        println!();
+        println!("== Slice files ==");
+        for (i, name) in slice_names.iter().enumerate() {
+            let found = slice_data.get(i).map_or(0, Vec::len);
+            println!("  slice[{i}]: {name} ({found} bytes)");
+        }
     }
 
     println!();

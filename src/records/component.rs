@@ -1,43 +1,46 @@
-//! `TSetupComponentEntry` - installable component definition.
+//! `TSetupComponentEntry`: one `[Components]` entry, a part of the
+//! application the user can choose to install. Components form a tree by
+//! their names: `help\english` is a child of `help`.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupComponentEntry = packed record
-//!     Name, Description, Types, Languages, Check: String;
-//!     ExtraDiskSpaceRequired: Integer64;     // u32 pre-4.0
-//!     Level: Integer;                        // since 4.0.0
-//!     Used: Boolean;                         // since 4.0.0
-//!     MinVersion, OnlyBelowVersion: TSetupVersionData;
-//!     Options: TSetupComponentOptions;       // 1 byte (3..5 bits)
-//!     Size: Integer64;                       // u64; was u32 pre-4.0
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/component.cpp`. Pascal flag
-//! ordering (matches innoextract's `STORED_FLAGS_MAP`):
-//! - 0..2 always: Fixed, Restart, DisableNoUninstallWarning
-//! - +3 (3.0.8+): Exclusive
-//! - +4 (4.2.3+): DontInheritCheck
+//! On disk (`SECompressedBlockWrite`): `Name`, `Description`, `Types`,
+//! from 4.0.1 `Languages`, from 4.0.0 `Check` (`CheckOnce` from 6.5.0),
+//! `ExtraDiskSpaceRequired`, from 4.0.0 `Level` and `Used`, the Windows
+//! version range, the `Options` set and `Size`. Reader reference:
+//! innoextract `setup/component.cpp`; every layout is checked against
+//! upstream's own declarations by the `crate::upstream` tests.
 
 use std::collections::HashSet;
 
 use crate::{
     error::Error,
     records::windows::WindowsVersionRange,
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// `TSetupComponentOptions` flag bits.
+/// `TSetupComponentEntry.Options`: the entry's `Flags:`. `checkablealone`
+/// has no bit; it sets [`ComponentEntry::used`].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum ComponentFlag {
+    /// `coFixed` (`fixed`): the user cannot change the component's
+    /// selection.
     Fixed,
+    /// `coRestart` (`restart`): ask to restart Windows when the component is
+    /// installed.
     Restart,
+    /// `coDisableNoUninstallWarning` (`disablenouninstallwarning`): no
+    /// warning that deselecting an installed component does not uninstall
+    /// it.
     DisableNoUninstallWarning,
+    /// `coExclusive` (`exclusive`): mutually exclusive with its exclusive
+    /// siblings, shown as a radio button (3.0.8+).
     Exclusive,
+    /// `coDontInheritCheck` (`dontinheritcheck`): not checked automatically
+    /// when its parent is (4.2.3+).
     DontInheritCheck,
 }
 
@@ -49,45 +52,51 @@ stable_flag_enum!(ComponentFlag, {
     DontInheritCheck => "dont_inherit_check",
 });
 
-/// Parsed `TSetupComponentEntry`.
+/// One `[Components]` entry (`TSetupComponentEntry`). A string field the
+/// version does not have is empty.
 #[derive(Clone, Debug)]
 pub struct ComponentEntry {
-    /// `Name:` directive.
+    /// `Name:`: the component's internal name, `\`-separated by level,
+    /// which `Components:` parameters name.
     pub name: String,
-    /// `Description:` directive.
+    /// `Description:`: the text the wizard shows, constants unexpanded.
     pub description: String,
-    /// `Types:` directive (semicolon-separated type names this
-    /// component is included by).
+    /// `Types:`: space-separated names of the setup types that include the
+    /// component.
     pub types: String,
-    /// `Languages:` filter. 4.0.1+.
+    /// `Languages:`: the languages the component is offered in (4.0.1+).
     pub languages: String,
-    /// `Check:` directive. 4.0.0+ (or ISX 1.3.24+).
+    /// `Check:`: the `[Code]` function deciding whether it is offered
+    /// (4.0.0+, or any ISX build; `CheckOnce` from 6.5.0, evaluated once).
     pub check: String,
-    /// `ExtraDiskSpaceRequired` - disk usage attributable to this
-    /// component beyond the file payload sum.
+    /// `ExtraDiskSpaceRequired:`: bytes the component needs beyond its files
+    /// (64-bit from 4.0.0).
     pub extra_disk_space_required: i64,
-    /// `Level:` directive (component priority). 4.0.0+ (or ISX 3.0.3+).
+    /// The entry's depth in the tree: the number of `\` or `/` in its
+    /// name, 0 for a top-level entry (a byte from 6.7.0; 4.0.0+, 0 before).
     pub level: i32,
-    /// `Used:` boolean (4.0.0+ / ISX 3.0.4+). Defaults to `true`.
+    /// `Used`: some entry names the component in `Components:`, or it has
+    /// the `checkablealone` flag; the wizard then keeps it checkable when
+    /// all its children are unchecked (4.0.0+; `true` before).
     pub used: bool,
-    /// MinVersion + OnlyBelowVersion.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
-    /// Decoded options.
+    /// `Options`, decoded.
     pub flags: HashSet<ComponentFlag>,
-    /// Raw `Options` byte.
+    /// `Options` as stored.
     pub options_raw: u8,
-    /// `Size` - total file size when this component is selected.
-    /// `u64` from 4.0.0+; `u32`-promoted from earlier versions.
+    /// `Size`: the bytes the component's files install, which the compiler
+    /// computes (64-bit from 4.0.0; 2.0.0+).
     pub size: u64,
 }
 
-impl ComponentEntry {
+impl FromReader for ComponentEntry {
     /// Reads one `TSetupComponentEntry`.
     ///
     /// # Errors
     ///
     /// String decoding / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let name = read_setup_string(reader, version, "Component.Name")?;
         let description = read_setup_string(reader, version, "Component.Description")?;
         let types = read_setup_string(reader, version, "Component.Types")?;
@@ -178,7 +187,7 @@ fn decode_component_flags(raw: u8, version: &Version) -> HashSet<ComponentFlag> 
             ComponentFlag::DisableNoUninstallWarning,
         ]
     };
-    super::decode_packed_flags(&[raw], table)
+    crate::util::flags::decode_packed_flags(&[raw], table)
 }
 
 #[cfg(test)]

@@ -11,8 +11,6 @@
 //!   derivation (`SHA1` 5.3.9+ vs `MD5` pre-5.3.9), where the
 //!   chunk's 8-byte salt is hashed with the password and the
 //!   result truncated to 16 bytes for the RC4 key.
-//! - `research-notes/06-crypto-variants-history.md` §"Pre-6.4
-//!   password hashes".
 //!
 //! Password encoding is **UTF-16LE**, identical to the 6.4+ case.
 //! For the SHA-1 / MD5 password-hash form, Inno also prefixes the
@@ -21,11 +19,11 @@
 
 use md5::Digest as _;
 
-use crate::{records::dataentry::DataChecksum, util::checksum::crc32};
+use crate::util::checksum::crc32;
 
 /// Family of pre-6.4 password verification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LegacyHashFamily {
+pub enum LegacyHashFamily {
     /// `< 4.2.0`: 4-byte CRC32 of the UTF-16LE password (no salt,
     /// no `PasswordCheckHash` prefix).
     Crc32,
@@ -39,7 +37,7 @@ pub(crate) enum LegacyHashFamily {
 
 /// Chooses the correct hash family for a parsed Inno Setup
 /// version. Callers feed this to [`verify_password_legacy`].
-pub(crate) fn legacy_hash_family(version: &crate::version::Version) -> LegacyHashFamily {
+pub fn legacy_hash_family(version: &crate::version::Version) -> LegacyHashFamily {
     if version.at_least(5, 3, 9) {
         LegacyHashFamily::Sha1SaltedWithPrefix
     } else if version.at_least(4, 2, 2) {
@@ -55,7 +53,7 @@ pub(crate) fn legacy_hash_family(version: &crate::version::Version) -> LegacyHas
 /// fields per Inno version. The variant matches the family
 /// selected by [`legacy_hash_family`].
 #[derive(Clone, Debug)]
-pub(crate) enum LegacyStoredHash {
+pub enum LegacyStoredHash {
     /// `< 4.2.0`.
     Crc32(u32),
     /// `4.2.0..4.2.2` - bare MD5 (no salt). `salt` is unused but
@@ -70,20 +68,16 @@ pub(crate) enum LegacyStoredHash {
 /// The 17-byte literal prefix Inno's compiler/runtime prepend
 /// before salt+password when computing the password hash for
 /// 4.2.2..6.4.
-pub(crate) const PASSWORD_CHECK_HASH_PREFIX: &[u8] = b"PasswordCheckHash";
+pub const PASSWORD_CHECK_HASH_PREFIX: &[u8] = b"PasswordCheckHash";
 
 /// Verifies a candidate password against the stored hash form.
 /// `password` is encoded according to the installer's wire string
 /// type - UTF-16LE for Unicode builds (5.6+ default, plus any pre-5.6
 /// build with the `(u)` marker), Windows-1252 for ANSI builds. This
-/// matches innoextract `info::get_key` (`research/src/setup/info.cpp:322-352`)
+/// matches innoextract `info::get_key` (innoextract `setup/info.cpp`)
 /// which feeds the password to the hasher via `util::from_utf8(...,
 /// codepage)`.
-pub(crate) fn verify_password_legacy(
-    password: &str,
-    stored: &LegacyStoredHash,
-    unicode: bool,
-) -> bool {
+pub fn verify_password_legacy(password: &str, stored: &LegacyStoredHash, unicode: bool) -> bool {
     let pwd: Vec<u8> = if unicode {
         crate::crypto::pbkdf2::password_bytes_utf16le(password)
     } else {
@@ -132,8 +126,8 @@ pub(crate) fn verify_password_legacy(
 /// builds (UTF-16LE bytes) and `false` for legacy ANSI builds
 /// (Windows-1252 / raw bytes). innoextract feeds the codepage-
 /// encoded password into the hash via `info::get_key`
-/// (`research/src/setup/info.cpp:322-352`), and the chunk
-/// decryptor (`research/src/stream/chunk.cpp:196-202`) hashes
+/// (innoextract `setup/info.cpp`), and the chunk
+/// decryptor (innoextract `stream/chunk.cpp`) hashes
 /// `salt || key` as-is. Using the wrong encoding produces a
 /// valid-looking RC4 key that decrypts to garbage - observable as
 /// LZMA stream-format errors, not a clean failure.
@@ -142,7 +136,7 @@ pub(crate) fn verify_password_legacy(
 /// SHA-1 (5.3.9..6.4 era) and 16 bytes for MD5 (pre-5.3.9). RC4's
 /// KSA accepts variable-length keys, so the digest is fed in
 /// unmodified.
-pub(crate) fn arc4_chunk_key(
+pub fn arc4_chunk_key(
     password: &str,
     chunk_salt: &[u8; 8],
     use_sha1: bool,
@@ -163,22 +157,6 @@ pub(crate) fn arc4_chunk_key(
         h.update(chunk_salt);
         h.update(&pwd);
         h.finalize().to_vec()
-    }
-}
-
-/// Returns a stable string label for `c`'s digest algorithm.
-///
-/// Reserved for future use when pre-6.4 chunk-content checksums
-/// (CRC32, MD5) are routed through the crypto module; currently
-/// only callable from tests.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn checksum_label(c: &DataChecksum) -> &'static str {
-    match c {
-        DataChecksum::Adler32(_) => "Adler32",
-        DataChecksum::Crc32(_) => "CRC32",
-        DataChecksum::Md5(_) => "MD5",
-        DataChecksum::Sha1(_) => "SHA-1",
-        DataChecksum::Sha256(_) => "SHA-256",
     }
 }
 

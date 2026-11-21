@@ -10,16 +10,12 @@
 //! [ fixed numeric / enum / set tail ]
 //! ```
 //!
-//! The set of String fields, the set of AnsiString fields, the count
-//! list, and the shape of the fixed numeric tail all evolve with
-//! version. The fixed-tail layout per version is documented
-//! byte-by-byte in `research-notes/11-fixed-tail.md`; the parser in
-//! this module follows that document and matches innoextract's
-//! `header::load` (`research/src/setup/header.cpp:340-547`).
-//!
-//! See `RESEARCH.md` §6, `research-notes/03-setup-header.md`, and
-//! `research-notes/10-version-evolution.md` §B for the cross-version
-//! reference.
+//! The string fields, the counts and the fixed tail all change with the
+//! version; each field documents when it exists. Reader reference:
+//! innoextract `setup/header.cpp`. The layout of every SetupID marker whose
+//! source is available is checked against upstream's own `TSetupHeader` by
+//! the `crate::upstream` tests: field order, kinds, sizes, set bits and
+//! enum values.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,150 +24,177 @@ use crate::{
     records::windows::WindowsVersionRange,
     util::{
         encoding::{read_ansi_bytes, read_setup_string},
-        read::Reader,
+        read::{FromReader, Reader},
     },
     version::Version,
 };
 
-/// Identifier for a single `TSetupHeader` `String` field.
-///
-/// Fields are listed in **declaration order** as they appear in the
-/// canonical `Shared.Struct.pas`, but not every variant is present in
-/// every Inno Setup version. The per-version layout helper
-/// `header_string_fields` returns only the variants that exist in
-/// a given version.
+/// A string field of the setup header (`TSetupHeader`), read with
+/// [`SetupHeader::string`]. Each is a `[Setup]` directive's value as the
+/// compiler stored it, constants such as `{app}` unexpanded; a field the
+/// version does not have is absent. Variants are in declaration order.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HeaderString {
-    /// `AppName` directive.
+    /// `AppName`: the application's name, without version.
     AppName,
-    /// `AppVerName` directive.
+    /// `AppVerName`: name and version, shown on the Welcome page and used
+    /// for the Add/Remove Programs entry by default.
     AppVerName,
-    /// `AppId` directive.
+    /// `AppId`: the identity stored in the uninstall log and in the
+    /// uninstall registry key's name (`<AppId>_is1`); defaults to `AppName`
+    /// (1.3.0+).
     AppId,
-    /// `AppCopyright` directive.
+    /// `AppCopyright`: the copyright line.
     AppCopyright,
-    /// `AppPublisher` directive.
+    /// `AppPublisher`: shown in Add/Remove Programs (1.3.0+).
     AppPublisher,
-    /// `AppPublisherURL` directive.
+    /// `AppPublisherURL`: the publisher's link in Add/Remove Programs
+    /// (1.3.0+).
     AppPublisherUrl,
-    /// `AppSupportPhone` directive.
+    /// `AppSupportPhone`: shown in Add/Remove Programs (5.1.13+).
     AppSupportPhone,
-    /// `AppSupportURL` directive.
+    /// `AppSupportURL`: the support link in Add/Remove Programs (1.3.0+).
     AppSupportUrl,
-    /// `AppUpdatesURL` directive.
+    /// `AppUpdatesURL`: the updates link in Add/Remove Programs (1.3.0+).
     AppUpdatesUrl,
-    /// `AppVersion` directive.
+    /// `AppVersion`: the version shown in Add/Remove Programs (1.3.0+).
     AppVersion,
-    /// `DefaultDirName` directive.
+    /// `DefaultDirName`: the default installation directory, e.g.
+    /// `{autopf}\My Program`.
     DefaultDirName,
-    /// `DefaultGroupName` directive.
+    /// `DefaultGroupName`: the default Start menu folder.
     DefaultGroupName,
-    /// `BaseFilename` directive (= the produced setup .exe filename).
+    /// `UninstallIconName`: the name of the uninstaller shortcut Setup
+    /// itself put in the Start menu folder (before 3.0.0; later scripts
+    /// add one in `[Icons]` with `{uninstallexe}`).
+    UninstallIconName,
+    /// `BaseFilename`: never filled by any release whose source is
+    /// available, so always empty; 7.1.1 dropped it.
     BaseFilename,
-    /// `UninstallFilesDir` directive.
+    /// `UninstallFilesDir`: where the uninstaller's `unins*` files go,
+    /// `{app}` by default (1.3.3+).
     UninstallFilesDir,
-    /// `UninstallDisplayName` directive.
+    /// `UninstallDisplayName`: the Add/Remove Programs name; empty means
+    /// `AppVerName` (1.3.6+).
     UninstallDisplayName,
-    /// `UninstallDisplayIcon` directive.
+    /// `UninstallDisplayIcon`: the Add/Remove Programs icon file, with an
+    /// optional `,index` (1.3.6+).
     UninstallDisplayIcon,
-    /// `AppMutex` directive.
+    /// `AppMutex`: comma-separated mutex names; Setup and the uninstaller
+    /// refuse to run while any exists (1.3.14+).
     AppMutex,
-    /// `DefaultUserInfoName` directive.
+    /// `DefaultUserInfoName`: the User Information page's default name
+    /// (3.0.0+).
     DefaultUserInfoName,
-    /// `DefaultUserInfoOrg` directive.
+    /// `DefaultUserInfoOrg`: its default organization (3.0.0+).
     DefaultUserInfoOrg,
-    /// `DefaultUserInfoSerial` directive.
+    /// `DefaultUserInfoSerial`: its default serial number (4.0.0+).
     DefaultUserInfoSerial,
-    /// `AppReadmeFile` directive.
+    /// `AppReadmeFile`: a file or URL shown in Add/Remove Programs (4.2.4+).
     AppReadmeFile,
-    /// `AppContact` directive.
+    /// `AppContact`: shown in Add/Remove Programs (4.2.4+).
     AppContact,
-    /// `AppComments` directive.
+    /// `AppComments`: shown in Add/Remove Programs (4.2.4+).
     AppComments,
-    /// `AppModifyPath` directive.
+    /// `AppModifyPath`: the command a "Modify" button in Add/Remove Programs
+    /// runs (4.2.4+).
     AppModifyPath,
-    /// `CreateUninstallRegKey` directive.
+    /// `CreateUninstallRegKey`: `yes`, `no` or a `[Code]` expression;
+    /// whether Setup creates the Add/Remove Programs entry (5.3.8+; a flag
+    /// before).
     CreateUninstallRegKey,
-    /// `Uninstallable` directive.
+    /// `Uninstallable`: `yes`, `no` or a `[Code]` expression; whether the
+    /// uninstaller is installed (5.3.10+; a flag before).
     Uninstallable,
-    /// `CloseApplicationsFilter` directive.
+    /// `CloseApplicationsFilter`: wildcards of the files whose users Setup
+    /// offers to close (5.5.0+).
     CloseApplicationsFilter,
-    /// `SetupMutex` directive.
+    /// `SetupMutex`: comma-separated mutexes Setup creates so a second Setup
+    /// refuses to start (5.5.6+).
     SetupMutex,
-    /// `ChangesEnvironment` directive.
+    /// `ChangesEnvironment`: `yes`, `no` or a `[Code]` expression; whether
+    /// Setup broadcasts an environment change at the end (5.6.1+; a flag
+    /// before).
     ChangesEnvironment,
-    /// `ChangesAssociations` directive.
+    /// `ChangesAssociations`: likewise, for refreshing file associations
+    /// (5.6.1+; a flag before).
     ChangesAssociations,
-    /// `ArchitecturesAllowed` (added at 6.4 as a `String` - earlier
-    /// versions stored this as a packed enum-set in the fixed
-    /// portion).
+    /// `ArchitecturesAllowed`: the architecture expression Setup may run
+    /// on, e.g. `x64compatible` (6.3.0+; a set in [`HeaderTail`] before).
     ArchitecturesAllowed,
-    /// `ArchitecturesInstallIn64BitMode` (added at 6.4 as a
-    /// `String`; earlier as a packed enum-set).
+    /// `ArchitecturesInstallIn64BitMode`: the expression enabling 64-bit
+    /// install mode (6.3.0+; a set in [`HeaderTail`] before).
     ArchitecturesInstallIn64BitMode,
-    /// `CloseApplicationsFilterExcludes` (added at 6.4.3, commit
-    /// `72756e57`).
+    /// `CloseApplicationsFilterExcludes`: wildcards excluded from
+    /// `CloseApplicationsFilter` (6.4.2+).
     CloseApplicationsFilterExcludes,
-    /// `SevenZipLibraryName` (7-Zip integration; added in the 6.5
-    /// series).
+    /// The 7-Zip DLL `ArchiveExtraction` selects, e.g. `is7zxa.dll`; empty
+    /// for the built-in `basic` decoder (6.5.0+).
     SevenZipLibraryName,
-    /// `UsePreviousAppDir` directive (string-typed since 6.5+).
+    /// `UsePreviousAppDir`: `yes`, `no` or a `[Code]` expression; whether a
+    /// reinstall defaults to the previous directory (6.7.0+; a flag
+    /// before).
     UsePreviousAppDir,
-    /// `UsePreviousGroup` directive (string-typed since 6.5+).
+    /// `UsePreviousGroup`: likewise for the Start menu folder (6.7.0+; a
+    /// flag before).
     UsePreviousGroup,
-    /// `UsePreviousSetupType` directive (string-typed since 6.5+).
+    /// `UsePreviousSetupType`: likewise for the setup type and components
+    /// (6.7.0+; a flag before).
     UsePreviousSetupType,
-    /// `UsePreviousTasks` directive (string-typed since 6.5+).
+    /// `UsePreviousTasks`: likewise for the tasks (6.7.0+; a flag before).
     UsePreviousTasks,
-    /// `UsePreviousUserInfo` directive (string-typed since 6.5+).
+    /// `UsePreviousUserInfo`: likewise for the user information (6.7.0+; a
+    /// flag before).
     UsePreviousUserInfo,
 }
 
-/// Identifier for a `TSetupHeader` `AnsiString` field.
+/// A raw-bytes field of the setup header, read with [`SetupHeader::ansi`].
+/// Before 5.2.5 these sit among the strings; from 5.2.5 they follow them.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HeaderAnsi {
-    /// License text shown on the wizard's license page (raw bytes;
-    /// caller decodes per the relevant language codepage).
+    /// `LicenseFile`'s contents, RTF or plain text, as stored. Languages may
+    /// have their own ([`crate::records::language::LanguageEntry`]).
     LicenseText,
-    /// Info text shown before installation.
+    /// `InfoBeforeFile`'s contents, shown before installing.
     InfoBeforeText,
-    /// Info text shown after installation.
+    /// `InfoAfterFile`'s contents, shown after installing.
     InfoAfterText,
-    /// Compiled PascalScript bytecode blob - opaque from this
-    /// crate's perspective; the IFPS container is not parsed.
+    /// `SignedUninstallerSignature`: the uninstaller's Authenticode
+    /// signature, which Setup attaches to the uninstaller it writes
+    /// (`SignedUninstaller=yes`, 5.2.1 to 5.3.9; a `String` before 5.2.5,
+    /// bytes either way).
+    SignedUninstallerSignature,
+    /// The compiled `[Code]` section, an IFPS container
+    /// ([`crate::InnoInstaller::compiledcode`] parses it) (4.0.0+).
     CompiledCodeText,
 }
 
-/// Counts of follow-on records, read after the string section.
-///
-/// Each counter says how many records of that type live further
-/// into the decompressed setup-0 buffer; the typed-record iterators
-/// use these to bound their reads.
+/// How many records of each type follow the header in setup-0
+/// (`Num*Entries`). A count the version does not have is 0.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntryCounts {
-    /// `NumLanguageEntries`.
+    /// `NumLanguageEntries` (4.0.0+).
     pub languages: u32,
-    /// `NumCustomMessageEntries`.
+    /// `NumCustomMessageEntries` (4.2.1+).
     pub custom_messages: u32,
-    /// `NumPermissionEntries`.
+    /// `NumPermissionEntries` (4.1.0+).
     pub permissions: u32,
-    /// `NumTypeEntries`.
+    /// `NumTypeEntries` (2.0.0+).
     pub types: u32,
-    /// `NumComponentEntries`.
+    /// `NumComponentEntries` (2.0.0+).
     pub components: u32,
-    /// `NumTaskEntries`.
+    /// `NumTaskEntries` (2.0.0+).
     pub tasks: u32,
     /// `NumDirEntries`.
     pub directories: u32,
-    /// `NumISSigKeyEntries` - only present in Inno Setup 6.5.0+
-    /// (commit `ac2b262d`, ships in tag `is-6_5_0`).
+    /// `NumISSigKeyEntries` (6.5.0+; `None` before).
     pub iss_sig_keys: Option<u32>,
     /// `NumFileEntries`.
     pub files: u32,
-    /// `NumFileLocationEntries` (file-data pointers into setup-1
-    /// chunks).
+    /// `NumFileLocationEntries`: the data entries in setup-0's second
+    /// block.
     pub file_locations: u32,
     /// `NumIconEntries`.
     pub icons: u32,
@@ -189,67 +212,213 @@ pub struct EntryCounts {
     pub uninstall_run: u32,
 }
 
-/// `TSetupHeaderOption` - declared options bit. The numeric value of
-/// each variant has no on-wire meaning; bit positions are
-/// version-dependent and resolved by [`SetupHeader::options`].
-///
-/// The variant set is the union of all known versions' enums.
-/// `Shared.Struct.pas` is authoritative; see
-/// `research-notes/11-fixed-tail.md` §"`TSetupHeaderOption` enum"
-/// for the per-version bit-position tables.
+/// One `TSetupHeaderOption` flag: a yes/no `[Setup]` directive, or a fact
+/// the compiler records, set in `TSetupHeader.Options`. The bit each
+/// occupies varies by version; [`SetupHeader::options`] decodes them. The
+/// variants are the union over every release, each documented with the
+/// directive that sets it and the releases that have it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)] // Each variant is a directive name; the names self-document.
 pub enum HeaderOption {
+    /// `shDisableStartupPrompt` (`DisableStartupPrompt=yes`): no "This will
+    /// install..." prompt at startup.
     DisableStartupPrompt,
+    /// `shCreateAppDir` (`CreateAppDir=yes`, the default): there is an
+    /// application directory; without it `{app}` is `{win}` and no directory
+    /// page is shown.
     CreateAppDir,
+    /// `shAllowNoIcons` (`AllowNoIcons=yes`): the Start menu page offers "Don't
+    /// create a Start menu folder".
     AllowNoIcons,
+    /// `shAlwaysRestart` (`AlwaysRestart=yes`): ask to restart Windows after
+    /// every successful install (absent in 3.0.0 to 3.0.2).
     AlwaysRestart,
+    /// `shAlwaysUsePersonalGroup` (`AlwaysUsePersonalGroup=yes`): `{group}` is
+    /// always the current user's Start menu.
     AlwaysUsePersonalGroup,
+    /// `shWindowVisible` (`WindowVisible=yes`): show the full-screen background
+    /// window (before SetupID 6.4.0.1).
     WindowVisible,
+    /// `shWindowShowCaption` (`WindowShowCaption=yes`): the background window
+    /// has a caption (before 6.4.0.1).
     WindowShowCaption,
+    /// `shWindowResizable` (`WindowResizable=yes`): the background window can
+    /// be resized (before 6.4.0.1).
     WindowResizable,
+    /// `shWindowStartMaximized` (`WindowStartMaximized=yes`): the background
+    /// window starts maximized (before 6.4.0.1).
     WindowStartMaximized,
+    /// `shEnableDirDoesntExistWarning` (`EnableDirDoesntExistWarning=yes`):
+    /// warn when the chosen directory does not exist.
     EnableDirDoesntExistWarning,
+    /// `shPassword` (`Password=`): Setup asks for a password. The verifier is
+    /// in [`HeaderTail`] or [`crate::EncryptionInfo`]; see
+    /// [`crate::InnoInstaller::from_bytes_with_passwords`].
     Password,
+    /// `shAllowRootDirectory` (`AllowRootDirectory=yes`): a drive's root may be
+    /// the installation directory (1.2.6+).
     AllowRootDirectory,
+    /// `shDisableFinishedPage` (`DisableFinishedPage=yes`): no Setup Completed
+    /// page (1.2.14+).
     DisableFinishedPage,
+    /// `shUsePreviousAppDir` (`UsePreviousAppDir=yes`): a reinstall defaults to
+    /// the previous directory (1.3.1 to 6.7.0; then
+    /// [`HeaderString::UsePreviousAppDir`]).
     UsePreviousAppDir,
+    /// `shBackColorHorizontal` (`BackColorDirection=lefttoright`): the
+    /// background window's gradient runs horizontally (1.3.3 to 6.4.0.1).
     BackColorHorizontal,
+    /// `shUsePreviousGroup` (`UsePreviousGroup=yes`): a reinstall defaults to
+    /// the previous Start menu folder (1.3.10 to 6.7.0; then
+    /// [`HeaderString::UsePreviousGroup`]).
     UsePreviousGroup,
+    /// `shUpdateUninstallLogAppName` (`UpdateUninstallLogAppName=yes`):
+    /// appending to an uninstall log replaces its `AppName` (1.3.20+).
     UpdateUninstallLogAppName,
+    /// `shUsePreviousSetupType` (`UsePreviousSetupType=yes`): a reinstall
+    /// defaults to the previous setup type and components (2.0.0 to 6.7.0; then
+    /// a string).
     UsePreviousSetupType,
+    /// `shDisableReadyMemo` (`DisableReadyMemo=yes`): the Ready to Install page
+    /// shows no settings list (2.0.0+).
     DisableReadyMemo,
+    /// `shAlwaysShowComponentsList` (`AlwaysShowComponentsList=yes`): always
+    /// show the components list (2.0.0+).
     AlwaysShowComponentsList,
+    /// `shFlatComponentsList` (`FlatComponentsList=yes`): flat rather than 3D
+    /// checkboxes in the components list (2.0.0+).
     FlatComponentsList,
+    /// `shShowComponentSizes` (`ShowComponentSizes=yes`): show each component's
+    /// size (2.0.0+).
     ShowComponentSizes,
+    /// `shUsePreviousTasks` (`UsePreviousTasks=yes`): a reinstall defaults to
+    /// the previous tasks (2.0.0 to 6.7.0; then a string).
     UsePreviousTasks,
+    /// `shDisableReadyPage` (`DisableReadyPage=yes`): no Ready to Install page
+    /// (2.0.0+).
     DisableReadyPage,
+    /// `shAlwaysShowDirOnReadyPage` (`AlwaysShowDirOnReadyPage=yes`): the Ready
+    /// to Install page always lists the directory (2.0.7+).
     AlwaysShowDirOnReadyPage,
+    /// `shAlwaysShowGroupOnReadyPage` (`AlwaysShowGroupOnReadyPage=yes`): it
+    /// always lists the Start menu folder (2.0.7+).
     AlwaysShowGroupOnReadyPage,
+    /// `shAllowUNCPath` (`AllowUNCPath=yes`, the default): the directory may be
+    /// a UNC path (2.0.18+).
     AllowUNCPath,
+    /// `shUserInfoPage` (`UserInfoPage=yes`): show the User Information page
+    /// (3.0.0+).
     UserInfoPage,
+    /// `shUsePreviousUserInfo` (`UsePreviousUserInfo=yes`): a reinstall
+    /// defaults to the previous user information (3.0.0 to 6.7.0; then a
+    /// string).
     UsePreviousUserInfo,
+    /// `shUninstallRestartComputer` (`UninstallRestartComputer=yes`): the
+    /// uninstaller always asks to restart (3.0.1+).
     UninstallRestartComputer,
+    /// `shRestartIfNeededByRun` (`RestartIfNeededByRun=yes`): ask to restart
+    /// when a `[Run]` program queued files for replacement at reboot (3.0.3+).
     RestartIfNeededByRun,
+    /// `shShowTasksTreeLines` (`ShowTasksTreeLines=yes`): tree lines between
+    /// parent and child tasks (4.0.0+).
     ShowTasksTreeLines,
+    /// `shAllowCancelDuringInstall` (`AllowCancelDuringInstall=yes`): the user
+    /// may cancel while files are installed (4.0.9+; always allowed before, so
+    /// [`SetupHeader::options`] includes it).
     AllowCancelDuringInstall,
+    /// `shWizardImageStretch` (`WizardImageStretch=yes`): wizard images are
+    /// scaled to fit (4.1.3+).
     WizardImageStretch,
+    /// `shAppendDefaultDirName` (`AppendDefaultDirName=yes`): browsing for a
+    /// directory appends `DefaultDirName`'s last part (4.1.8+).
     AppendDefaultDirName,
+    /// `shAppendDefaultGroupName` (`AppendDefaultGroupName=yes`): browsing for
+    /// a Start menu folder appends `DefaultGroupName`'s last part (4.1.8+).
     AppendDefaultGroupName,
+    /// `shEncryptionUsed` (`Encryption=yes`): files are stored encrypted (4.2.2
+    /// to 6.5.0; then [`crate::EncryptionInfo`]).
     EncryptionUsed,
+    /// `shSetupLogging` (`SetupLogging=yes`): Setup always writes a log, as
+    /// `/LOG` does (5.1.13+).
     SetupLogging,
+    /// `shSignedUninstaller` (`SignedUninstaller=yes`): the uninstaller carries
+    /// the signature the compiler made for it (5.2.1+).
     SignedUninstaller,
+    /// `shUsePreviousLanguage` (`UsePreviousLanguage=yes`): a reinstall
+    /// defaults to the previous language (5.3.8+).
     UsePreviousLanguage,
+    /// `shDisableWelcomePage` (`DisableWelcomePage=yes`): no Welcome page
+    /// (5.3.9+).
     DisableWelcomePage,
+    /// `shCloseApplications` (`CloseApplications=yes` or `force`): offer to
+    /// close applications using files Setup replaces (5.5.0+).
     CloseApplications,
+    /// `shRestartApplications` (`RestartApplications=yes`): restart the
+    /// applications closed (5.5.0+).
     RestartApplications,
+    /// `shAllowNetworkDrive` (`AllowNetworkDrive=yes`, the default): the
+    /// directory may be on a network drive (5.5.0+; always allowed before, so
+    /// [`SetupHeader::options`] includes it).
     AllowNetworkDrive,
+    /// `shForceCloseApplications` (`CloseApplications=force`): close them
+    /// without asking in a silent install (5.5.7+).
     ForceCloseApplications,
+    /// `shAppNameHasConsts`: the compiler found constants in `AppName`, so
+    /// Setup expands it (6.0.0+).
     AppNameHasConsts,
+    /// `shUsePreviousPrivileges` (`UsePreviousPrivileges=yes`): a reinstall
+    /// uses the previous install mode, administrative or per-user (6.0.0+).
     UsePreviousPrivileges,
+    /// `shWizardResizable` (`WizardResizable=yes`): the wizard window can be
+    /// resized (6.0.0 to 6.6.0).
     WizardResizable,
+    /// `shUninstallLogging` (`UninstallLogging=yes`): the uninstaller always
+    /// writes a log (6.3.0+).
     UninstallLogging,
+    /// `shUninstallable` (before 5.3.10; then the `Uninstallable` string).
+    Uninstallable,
+    /// `shDisableDirPage` (before 5.3.3; then the `DisableDirPage` enum).
+    DisableDirPage,
+    /// `shDisableDirExistsWarning` (before 1.3.6).
+    DisableDirExistsWarning,
+    /// `shDisableProgramGroupPage` (before 5.3.3; then an enum).
+    DisableProgramGroupPage,
+    /// `shBackSolid` (before 1.3.3).
+    BackSolid,
+    /// `shDisableAppendDir` (before 4.1.2).
+    DisableAppendDir,
+    /// `shAdminPrivilegesRequired` (32-bit builds before 3.0.4; then `PrivilegesRequired`).
+    AdminPrivilegesRequired,
+    /// `shAlwaysCreateUninstallIcon` (32-bit builds before 3.0.0).
+    AlwaysCreateUninstallIcon,
+    /// `shOverwriteUninstRegEntries` (32-bit builds before 1.3.6).
+    OverwriteUninstRegEntries,
+    /// `shChangesAssociations` (32-bit builds before 6.0; then a string).
+    ChangesAssociations,
+    /// `shCreateUninstallRegKey` (1.3.0 to 5.3.8; then a string).
+    CreateUninstallRegKey,
+    /// `shBzipUsed` (2.0.17 to 4.1.5).
+    BzipUsed,
+    /// `shShowLanguageDialog` (4.0.0 to 4.0.10; then an enum).
+    ShowLanguageDialog,
+    /// `shDetectLanguageUsingLocale` (4.0.1 to 4.0.10).
+    DetectLanguageUsingLocale,
+    /// `shChangesEnvironment` (5.0.4 to 6.0; then a string).
+    ChangesEnvironment,
+    /// `shShowUndisplayableLanguages` (ANSI builds, 5.1.7 to 6.0).
+    ShowUndisplayableLanguages,
+    /// `shWizardModern` (6.6.0+).
+    WizardModern,
+    /// `shWizardBorderStyled` (6.6.0+).
+    WizardBorderStyled,
+    /// `shWizardKeepAspectRatio` (6.6.0+).
+    WizardKeepAspectRatio,
+    /// `shWizardLightButtonsUnstyled` (6.6.x).
+    WizardLightButtonsUnstyled,
+    /// `shRedirectionGuard` (6.7.0+).
+    RedirectionGuard,
+    /// `shWizardBevelsHidden` (6.7.0+).
+    WizardBevelsHidden,
 }
 
 stable_flag_enum!(HeaderOption, {
@@ -302,29 +471,123 @@ stable_flag_enum!(HeaderOption, {
     UsePreviousPrivileges => "use_previous_privileges",
     WizardResizable => "wizard_resizable",
     UninstallLogging => "uninstall_logging",
+    Uninstallable => "uninstallable",
+    DisableDirPage => "disable_dir_page",
+    DisableDirExistsWarning => "disable_dir_exists_warning",
+    DisableProgramGroupPage => "disable_program_group_page",
+    BackSolid => "back_solid",
+    DisableAppendDir => "disable_append_dir",
+    AdminPrivilegesRequired => "admin_privileges_required",
+    AlwaysCreateUninstallIcon => "always_create_uninstall_icon",
+    OverwriteUninstRegEntries => "overwrite_uninst_reg_entries",
+    ChangesAssociations => "changes_associations",
+    CreateUninstallRegKey => "create_uninstall_reg_key",
+    BzipUsed => "bzip_used",
+    ShowLanguageDialog => "show_language_dialog",
+    DetectLanguageUsingLocale => "detect_language_using_locale",
+    ChangesEnvironment => "changes_environment",
+    ShowUndisplayableLanguages => "show_undisplayable_languages",
+    WizardModern => "wizard_modern",
+    WizardBorderStyled => "wizard_border_styled",
+    WizardKeepAspectRatio => "wizard_keep_aspect_ratio",
+    WizardLightButtonsUnstyled => "wizard_light_buttons_unstyled",
+    RedirectionGuard => "redirection_guard",
+    WizardBevelsHidden => "wizard_bevels_hidden",
 });
 
-/// `TSetupWizardStyle`: visual presentation style of the wizard.
+/// `WizardStyle` (`TSetupWizardStyle`, 6.0.0 to 6.6.0): the wizard's look.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WizardStyle {
-    /// `wsClassic` - classic Inno Setup wizard look.
+    /// `wsClassic` (`classic`): the Inno Setup 5 look.
     Classic,
-    /// `wsModern` - modern Inno Setup wizard look (Inno Setup 6+).
+    /// `wsModern` (`modern`): the larger Inno Setup 6 look.
     Modern,
 }
 
 stable_name_enum!(WizardStyle, { Self::Classic => "classic", Self::Modern => "modern" });
 
-/// `TSetupImageAlphaFormat`: alpha-channel handling for wizard images.
+/// `WizardStyle`'s light/dark part (`TSetupWizardDarkStyle`, 6.6.0+).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WizardDarkStyle {
+    /// `wdsLight` (`light`, the default).
+    Light,
+    /// `wdsDark` (`dark`).
+    Dark,
+    /// `wdsDynamic` (`dynamic`): follow the Windows app theme.
+    Dynamic,
+}
+
+stable_name_enum!(WizardDarkStyle, {
+    Self::Light => "light",
+    Self::Dark => "dark",
+    Self::Dynamic => "dynamic",
+});
+
+/// How much of the wizard the light theme styles
+/// (`TSetupWizardLightControlStyling`, 6.7.0+; `WizardStyle` modifiers).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WizardLightControlStyling {
+    /// `wcsAll`: every control.
+    All,
+    /// `wcsAllButButtons` (`excludelightbuttons`): all but the buttons.
+    AllButButtons,
+    /// `wcsOnlyRequired` (`excludelightcontrols`): only what must be.
+    OnlyRequired,
+}
+
+stable_name_enum!(WizardLightControlStyling, {
+    Self::All => "all",
+    Self::AllButButtons => "all_but_buttons",
+    Self::OnlyRequired => "only_required",
+});
+
+/// `InstallMode` (2.0.0 to 5.0.0): how Setup ran by default before the
+/// `/SILENT` switches took over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InstallMode {
+    /// `imNormal`: the wizard.
+    Normal,
+    /// `imSilent`: a progress window only.
+    Silent,
+    /// `imVerySilent`: nothing shown.
+    VerySilent,
+}
+
+stable_name_enum!(InstallMode, {
+    Self::Normal => "normal",
+    Self::Silent => "silent",
+    Self::VerySilent => "very_silent",
+});
+
+/// `UninstallStyle` (2.0.0 to 5.0.0): the uninstaller's look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UninstallStyle {
+    /// `usClassic`.
+    Classic,
+    /// `usModern`; every release from 5.0.0 on.
+    Modern,
+}
+
+stable_name_enum!(UninstallStyle, {
+    Self::Classic => "classic",
+    Self::Modern => "modern",
+});
+
+/// `WizardImageAlphaFormat`: how 32-bit wizard images' alpha channel is
+/// read (5.5.7+).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ImageAlphaFormat {
-    /// `afIgnored` - alpha channel ignored.
+    /// `afIgnored` (`none`): no alpha.
     Ignored,
-    /// `afDefined` - alpha defined but not premultiplied.
+    /// `afDefined` (`defined`): straight alpha.
     Defined,
-    /// `afPremultiplied` - alpha premultiplied.
+    /// `afPremultiplied` (`premultiplied`): premultiplied alpha.
     Premultiplied,
 }
 
@@ -334,15 +597,17 @@ stable_name_enum!(ImageAlphaFormat, {
     Self::Premultiplied => "premultiplied",
 });
 
-/// `TSetupLogMode` for the uninstall log.
+/// `UninstallLogMode`: what Setup does with an existing uninstall log
+/// (1.3.0+).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UninstallLogMode {
-    /// `lmAppend` - append to existing log.
+    /// `lmAppend` (`append`, the default): add to it, so one uninstall
+    /// removes every installation.
     Append,
-    /// `lmNew` - create new log file.
+    /// `lmNew` (`new`): start a new log, `unins001` and so on.
     New,
-    /// `lmOverwrite` - overwrite existing log.
+    /// `lmOverwrite` (`overwrite`): replace it.
     Overwrite,
 }
 
@@ -352,46 +617,50 @@ stable_name_enum!(UninstallLogMode, {
     Self::Overwrite => "overwrite",
 });
 
-/// `TSetupBoolAutoNoYes` (used for `dir_exists_warning`,
-/// `disable_dir_page`, `disable_program_group_page`).
+/// `auto` / `no` / `yes`, the values of `DirExistsWarning` (`ddAuto`, ...)
+/// and of `DisableDirPage` / `DisableProgramGroupPage` (`dpAuto`, ...).
+/// `auto` means: decided at install time, e.g. shown only on a first
+/// installation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AutoNoYes {
-    /// `ddAuto`.
+    /// `auto`.
     Auto,
-    /// `ddNo`.
+    /// `no`.
     No,
-    /// `ddYes`.
+    /// `yes`.
     Yes,
 }
 
 stable_name_enum!(AutoNoYes, { Self::Auto => "auto", Self::No => "no", Self::Yes => "yes" });
 
-/// `TSetupBoolYesNoAuto` (used for `show_language_dialog`).
+/// `ShowLanguageDialog`'s values (`slYes`, `slNo`, `slAuto`): `auto`
+/// shows the language dialog only when no language matches the user's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum YesNoAuto {
-    /// `slYes`.
+    /// `yes`.
     Yes,
-    /// `slNo`.
+    /// `no`.
     No,
-    /// `slAuto`.
+    /// `auto`.
     Auto,
 }
 
 stable_name_enum!(YesNoAuto, { Self::Yes => "yes", Self::No => "no", Self::Auto => "auto" });
 
-/// `TSetupPrivilegesRequired` - privilege level required to install.
+/// `PrivilegesRequired`: the privileges Setup runs with (3.0.4+).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PrivilegesRequired {
-    /// `prNone` - no special privileges.
+    /// `prNone` (`none`): whatever the user has.
     None,
-    /// `prPowerUser` - power-user (legacy).
+    /// `prPowerUser` (`poweruser`): Power Users or administrators; removed
+    /// in 7.2.0.
     PowerUser,
-    /// `prAdmin` - administrator privileges.
+    /// `prAdmin` (`admin`): administrators, elevating on Vista and later.
     Admin,
-    /// `prLowest` - lowest available privileges (5.7.0+).
+    /// `prLowest` (`lowest`): never elevate; installs per user (5.3.7+).
     Lowest,
 }
 
@@ -402,15 +671,16 @@ stable_name_enum!(PrivilegesRequired, {
     Self::Lowest => "lowest",
 });
 
-/// `TSetupLanguageDetectionMethod`.
+/// `LanguageDetectionMethod`: how Setup picks the default language
+/// (4.0.10+).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LanguageDetectionMethod {
-    /// `ldUILanguage`.
+    /// `ldUILanguage` (`uilanguage`): match the user's UI language.
     UiLanguage,
-    /// `ldLocale`.
+    /// `ldLocale` (`locale`): match the user's locale.
     Locale,
-    /// `ldNone`.
+    /// `ldNone` (`none`): the first language.
     None,
 }
 
@@ -420,21 +690,21 @@ stable_name_enum!(LanguageDetectionMethod, {
     Self::None => "none",
 });
 
-/// `TSetupCompressMethod` - compression method for `setup-1` chunks
-/// (note: distinct from the `setup-0` block compression discovered at
-/// runtime via [`crate::Compression`]).
+/// `CompressMethod` (`TSetupCompressMethod`, 4.1.5+): how setup-1's chunks
+/// are compressed. Setup-0's own blocks are reported by
+/// [`crate::Compression`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CompressMethod {
-    /// `cmStored`.
+    /// `cmStored` (`none`): not compressed (4.2.5+).
     Stored,
-    /// `cmZlib`.
+    /// `cmZip` (`zip`): zlib.
     Zlib,
-    /// `cmBzip`.
+    /// `cmBzip` (`bzip`): bzip2.
     Bzip2,
-    /// `cmLzma`.
+    /// `cmLZMA` (`lzma`): LZMA.
     Lzma1,
-    /// `cmLzma2` (5.3.9+).
+    /// `cmLZMA2` (`lzma2`, 5.3.9+).
     Lzma2,
 }
 
@@ -446,31 +716,26 @@ stable_name_enum!(CompressMethod, {
     Self::Lzma2 => "lzma2",
 });
 
-/// Processor architectures Inno Setup recognizes on the wire.
-///
-/// Used in two distinct forms depending on installer version:
-///
-/// - 5.1.0..6.3 store `ArchitecturesAllowed` /
-///   `ArchitecturesInstallIn64BitMode` as packed `TSetupArchitecture`
-///   flag bits in the [`HeaderTail`].
-/// - 6.3+ store them as a boolean-expression `String`
-///   ([`HeaderString::ArchitecturesAllowed`] / `…InstallIn64BitMode`)
-///   over atoms like `x86compatible`, `x64compatible`, `arm64`.
-///
-/// `Arm32` is reachable only via the 6.4+ string-expression form
-/// (`arm32compatible`); the pre-6.4 packed-set wire format had no
-/// bit position for it. The [`crate::InnoInstaller::architecture`]
-/// accessor unifies both forms - see its docs for the parsing
-/// semantics.
+/// A processor architecture of `ArchitecturesAllowed` /
+/// `ArchitecturesInstallIn64BitMode`. From 5.1.0 to 6.3.0 those directives
+/// are a set of `TSetupProcessorArchitecture` in [`HeaderTail`]; from 6.3.0
+/// boolean expressions over identifiers such as `x64compatible`
+/// ([`HeaderString::ArchitecturesAllowed`]).
+/// [`crate::InnoInstaller::architecture`] reads either.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum Architecture {
+    /// `paUnknown`: a processor Setup does not recognize.
     Unknown,
+    /// `paX86` (`x86`).
     X86,
+    /// `paX64` (`x64`; `paAMD64` in 5.1.0 and 5.1.1).
     Amd64,
+    /// `paIA64` (`ia64`, before 6.3.0).
     IA64,
+    /// `arm32compatible`: 32-bit Arm, only in the 6.3.0+ expressions.
     Arm32,
+    /// `paARM64` (`arm64`, SetupID 5.5.7+).
     Arm64,
 }
 
@@ -486,153 +751,197 @@ stable_name_enum!(Architecture, {
 /// `TSetupPrivilegesRequiredOverride` flag bits (6.0.0+).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum PrivilegesRequiredOverride {
+    /// `proCommandLine` - the `/ALLUSERS` / `/CURRENTUSER` command-line
+    /// switches may override `PrivilegesRequired`.
     Commandline,
+    /// `proDialog` - Setup may ask the user which install mode to use.
     Dialog,
 }
 
-/// Parsed fixed numeric / enum / set tail of `TSetupHeader`.
-///
-/// Field membership and on-disk encoding both vary with version;
-/// see `research-notes/11-fixed-tail.md` for the byte-exact layout
-/// per version family. Fields that don't exist for a given version
-/// are `Option::None`.
-///
-/// Per the user's "expose everything" directive, every value the
-/// header carries is surfaced here in some form: typed enum where
-/// the on-disk byte falls in the documented range, raw byte
-/// otherwise. Bit-set values keep both a typed
-/// [`HashSet`]-decoded form and the raw bytes.
+stable_name_enum!(PrivilegesRequiredOverride, {
+    Self::Commandline => "command_line",
+    Self::Dialog => "dialog",
+});
+
+/// The setup header's fixed part (`TSetupHeader` after its strings and
+/// counts): versions, colours, wizard layout, password verifiers, the
+/// choices behind several wizard pages, and the `Options` flags. A field
+/// the version does not have is `None`, empty or 0, as each says. An enum
+/// field this crate decodes has a `*_raw` twin with the byte as stored,
+/// and is `None` for a value it does not know.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderTail {
-    /// `CompiledCodeVersion` - the compiler's `SetupBinVersion`
-    /// constant, written into the header at 7.0.0.3 and later (issrc
-    /// commit `f9095e91`, 2026-04-15). The low 31 bits are a packed
-    /// `(major,minor,patch,build)` quad - same layout as
-    /// [`crate::Version::a`]/`b`/`c`/`d` - and bit 31 is set when
-    /// the producing compiler ran in 64-bit mode.
-    ///
-    /// `None` for every release older than 7.0.0.3, including the
-    /// 7.0.0-preview-2 (`(7,0,0,1)`) and 7.0.0-preview-3
-    /// (`(7,0,0,2)`) builds whose SetupID still reads
-    /// `(7.0.0.1)`. Disambiguating those previews from a
-    /// fix-bearing 7.x release that keeps the same SetupID
-    /// requires reading this field.
+    /// `CompiledCodeVersion` (SetupID 7.0.0.3+): the compiler's
+    /// `SetupBinVersion`, a `(major << 24) | (minor << 16) | (patch << 8) |
+    /// build` quad, with bit 31 set when the compiled `[Code]` targets a
+    /// 64-bit Setup (`SetupArchitecture=x64`); 0 when there is no `[Code]`,
+    /// since Setup checks it only before running compiled code. `None`
+    /// before 7.0.0.3, including the 7.0 previews that write `(7.0.0.1)`.
     pub compiled_code_version: Option<u32>,
 
-    /// `MinVersion` + `OnlyBelowVersion` (`windows_version_range`).
+    /// `MinVersion` / `OnlyBelowVersion`: the Windows versions Setup runs
+    /// on.
     pub windows_version_range: WindowsVersionRange,
 
-    // --- pre-6.4 wizard colors ---
-    /// `BackColor` - wizard background (pre-6.4 only).
+    /// `BackColor`: the background window's colour, a `TColor`
+    /// (`0x00BBGGRR`) (before SetupID 6.4.0.1).
     pub back_color: Option<u32>,
-    /// `BackColor2` - wizard background gradient (pre-6.4 only).
+    /// `BackColor2`: its gradient's second colour (1.3.3 to 6.4.0.1).
     pub back_color2: Option<u32>,
+    /// `WizardImageBackColor`: the colour behind the wizard image, a
+    /// `TColor` (before 5.5.7, and again from 6.5.2).
+    pub wizard_image_back_color: Option<u32>,
+    /// `WizardSmallImageBackColor`: the colour behind the small wizard
+    /// image (2.0.0 to 5.0.4, and again from 6.5.2).
+    pub wizard_small_image_back_color: Option<u32>,
+    /// `WizardBackColor`: the wizard window's background colour (6.7.0+).
+    pub wizard_back_color: Option<u32>,
+    /// `WizardImageBackColor` in dark mode (`...DynamicDark`, 6.6.0+).
+    pub wizard_image_back_color_dynamic_dark: Option<u32>,
+    /// `WizardSmallImageBackColor` in dark mode (6.6.0+).
+    pub wizard_small_image_back_color_dynamic_dark: Option<u32>,
+    /// `WizardBackColor` in dark mode (6.7.0+).
+    pub wizard_back_color_dynamic_dark: Option<u32>,
+    /// `WizardImageOpacity`: 0 to 255 (6.6.1+).
+    pub wizard_image_opacity: Option<u8>,
+    /// `WizardBackImageOpacity`: 0 to 255 (6.7.0+).
+    pub wizard_back_image_opacity: Option<u8>,
 
-    // --- wizard layout ---
-    /// `WizardStyle` - `Classic` or `Modern`. Raw byte preserved as
-    /// `wizard_style_raw` for forward-compatibility.
+    /// `WizardStyle` (`classic` or `modern`, 6.0.0 to 6.6.0); `None` from
+    /// 6.6.0, where the byte is [`Self::wizard_dark_style`].
     pub wizard_style: Option<WizardStyle>,
-    /// Raw `WizardStyle` byte as read.
+    /// `WizardStyle` (6.0.0 to 6.6.0) or `WizardDarkStyle` (6.6.0+) as
+    /// stored; 0 before 6.0.0.
     pub wizard_style_raw: u8,
-    /// `WizardSizePercentX`.
+    /// `WizardDarkStyle`: `light`, `dark` or `dynamic` (6.6.0+).
+    pub wizard_dark_style: Option<WizardDarkStyle>,
+    /// `WizardLightControlStyling`, decoded (6.7.0+).
+    pub wizard_light_control_styling: Option<WizardLightControlStyling>,
+    /// `WizardLightControlStyling` as stored; 0 before 6.7.0.
+    pub wizard_light_control_styling_raw: u8,
+    /// `WizardSizePercent`'s horizontal part: the wizard's width as a
+    /// percentage of its default (6.0.0+; 0 before).
     pub wizard_size_percent_x: u32,
-    /// `WizardSizePercentY`.
+    /// `WizardSizePercent`'s vertical part (6.0.0+; 0 before).
     pub wizard_size_percent_y: u32,
-    /// `WizardImageAlphaFormat` (5.5.7+).
+    /// `WizardImageAlphaFormat`, decoded (5.5.7+).
     pub wizard_image_alpha_format: Option<ImageAlphaFormat>,
-    /// Raw alpha-format byte.
+    /// `WizardImageAlphaFormat` as stored; 0 before 5.5.7.
     pub wizard_image_alpha_format_raw: u8,
 
-    // --- inline encryption metadata (pre-6.5) ---
-    /// `PasswordHash`: SHA1 (20 bytes) for 5.3.9..6.3.x.
+    /// `PasswordHash`: SHA-1 of `PasswordCheckHash` + salt + password
+    /// (5.3.9 to 6.4.0).
     pub legacy_password_sha1: Option<[u8; 20]>,
-    /// `PasswordHash`: MD5 (16 bytes) for 4.2.0..5.3.9.
+    /// `PasswordHash`: MD5 of the password, salted from 4.2.2 (4.2.0 to
+    /// 5.3.9).
     pub legacy_password_md5: Option<[u8; 16]>,
-    /// `PasswordHash`: CRC32 verifier for pre-4.2.0.
+    /// `Password`: CRC-32 of the password (before 4.2.0).
     pub legacy_password_crc32: Option<u32>,
-    /// `PasswordSalt`: 8 bytes for 4.2.2..6.3.x.
+    /// `PasswordSalt` (4.2.2 to 6.4.0).
     pub legacy_password_salt: Option<[u8; 8]>,
-    /// `PasswordTest` (PBKDF2-SHA256-XChaCha20 verifier; 6.4.x only -
-    /// at 6.5.0 this moved into [`crate::EncryptionInfo`]).
+    /// `PasswordTest`: the PBKDF2/XChaCha20 verifier (6.4.x; from 6.5.0 in
+    /// [`crate::EncryptionInfo`]).
     pub password_test: Option<u32>,
-    /// `EncryptionKDFSalt` (16 bytes; 6.4.x only).
+    /// `EncryptionKDFSalt` (6.4.x).
     pub encryption_kdf_salt: Option<[u8; 16]>,
-    /// `EncryptionKDFIterations` (6.4.x only).
+    /// `EncryptionKDFIterations` (6.4.x).
     pub encryption_kdf_iterations: Option<u32>,
-    /// `EncryptionBaseNonce` (24 bytes; 6.4.x only).
+    /// `EncryptionBaseNonce` (6.4.x).
     pub encryption_base_nonce: Option<[u8; 24]>,
 
-    // --- disk / install metadata ---
-    /// `ExtraDiskSpaceRequired`.
+    /// `ExtraDiskSpaceRequired`: bytes Setup needs beyond the files (64-bit
+    /// from 4.0.0).
     pub extra_disk_space_required: i64,
-    /// `SlicesPerDisk` (4.0.0+).
+    /// `SlicesPerDisk`: with `DiskSpanning`, the number of slices per disk
+    /// (4.0.0+; 1 before).
     pub slices_per_disk: u32,
 
-    // --- user-visible config ---
-    /// `UninstallLogMode`.
+    /// `InstallMode`, decoded (2.0.0 to 5.0.0).
+    pub install_mode: Option<InstallMode>,
+    /// `InstallMode` as stored; 0 when the version has no such byte.
+    pub install_mode_raw: u8,
+    /// `UninstallLogMode`: `append`, `new` or `overwrite` (1.3.0+).
     pub uninstall_log_mode: Option<UninstallLogMode>,
-    /// Raw uninstall-log-mode byte.
+    /// `UninstallLogMode` as stored; 0 before 1.3.0.
     pub uninstall_log_mode_raw: u8,
-    /// `DirExistsWarning`.
+    /// `UninstallStyle`, decoded (2.0.0 to 5.0.0).
+    pub uninstall_style: Option<UninstallStyle>,
+    /// `UninstallStyle` as stored; 0 when the version has no such byte.
+    pub uninstall_style_raw: u8,
+    /// `DirExistsWarning`: whether choosing an existing directory warns
+    /// (1.3.6+).
     pub dir_exists_warning: Option<AutoNoYes>,
-    /// Raw dir-exists-warning byte.
+    /// `DirExistsWarning` as stored; 0 before 1.3.6.
     pub dir_exists_warning_raw: u8,
-    /// `PrivilegesRequired` (5.3.7+).
+    /// `PrivilegesRequired`: the privileges Setup asks for (3.0.4+; the
+    /// [`HeaderOption::AdminPrivilegesRequired`] flag before).
     pub privileges_required: Option<PrivilegesRequired>,
-    /// Raw privileges-required byte.
+    /// `PrivilegesRequired` as stored; 0 before 3.0.4.
     pub privileges_required_raw: u8,
-    /// `PrivilegesRequiredOverridesAllowed` (6.0.0+).
+    /// `PrivilegesRequiredOverridesAllowed`, decoded (6.0.0+).
     pub privileges_required_overrides: HashSet<PrivilegesRequiredOverride>,
-    /// Raw privileges-overrides bitfield.
+    /// `PrivilegesRequiredOverridesAllowed` as stored; empty before 6.0.0.
     pub privileges_required_overrides_raw: Vec<u8>,
-    /// `ShowLanguageDialog` (4.0.10+).
+    /// `ShowLanguageDialog` (4.0.10+; flags before).
     pub show_language_dialog: Option<YesNoAuto>,
-    /// Raw show-language-dialog byte.
+    /// `ShowLanguageDialog` as stored; 0 before 4.0.10.
     pub show_language_dialog_raw: u8,
     /// `LanguageDetectionMethod` (4.0.10+).
     pub language_detection_method: Option<LanguageDetectionMethod>,
-    /// Raw language-detection byte.
+    /// `LanguageDetectionMethod` as stored; 0 before 4.0.10.
     pub language_detection_method_raw: u8,
-    /// `CompressMethod` (4.1.5+).
+    /// `CompressMethod`: how setup-1's compressed chunks are compressed
+    /// (stored from 4.1.5; before, bzip2 when [`HeaderOption::BzipUsed`] is
+    /// set and zlib otherwise). A chunk whose data entry lacks
+    /// [`crate::records::dataentry::DataFlag::ChunkCompressed`] is stored
+    /// as is. `None` for a byte this crate does not know.
     pub compress_method: Option<CompressMethod>,
-    /// Raw compress-method byte.
+    /// `CompressMethod` as stored; 0 before 4.1.5.
     pub compress_method_raw: u8,
 
-    // --- pre-6.3 architecture sets ---
-    /// `ArchitecturesAllowed` (5.1.0..6.3 packed-set form). At 6.3+
-    /// this is replaced by a string expression in the header strings;
-    /// at 6.4+ that expression is itself a header `String` field.
+    /// `ArchitecturesAllowed` as a set (5.1.0 to 6.3.0; then
+    /// [`HeaderString::ArchitecturesAllowed`]). Empty means any.
     pub architectures_allowed: Option<HashSet<Architecture>>,
-    /// Raw `architectures_allowed` byte (5.1.0..6.3 only).
+    /// That set as stored.
     pub architectures_allowed_raw: Option<u8>,
-    /// `ArchitecturesInstallIn64BitMode`. Same versioning as
-    /// [`Self::architectures_allowed`].
+    /// `ArchitecturesInstallIn64BitMode` as a set (5.1.0 to 6.3.0; then a
+    /// string). Empty means never.
     pub architectures_install_in_64bit_mode: Option<HashSet<Architecture>>,
-    /// Raw `architectures_install_in_64bit_mode` byte.
+    /// That set as stored.
     pub architectures_install_in_64bit_mode_raw: Option<u8>,
 
-    // --- wizard pages ---
-    /// `DisableDirPage` (5.3.3+).
+    /// `SignedUninstallerOrigSize`: the size of the uninstaller before
+    /// signing (5.2.1 to 5.3.10).
+    pub signed_uninstaller_original_size: Option<u32>,
+    /// `SignedUninstallerHdrChecksum`: its PE header checksum (5.2.1 to
+    /// 5.3.10).
+    pub signed_uninstaller_header_checksum: Option<u32>,
+
+    /// `DisableDirPage`: whether the Select Destination Location page is
+    /// skipped (5.3.3+; a flag before).
     pub disable_dir_page: Option<AutoNoYes>,
-    /// Raw disable-dir-page byte.
+    /// `DisableDirPage` as stored; 0 before 5.3.3.
     pub disable_dir_page_raw: u8,
-    /// `DisableProgramGroupPage` (5.3.3+).
+    /// `DisableProgramGroupPage`: likewise for the Start menu page (5.3.3+;
+    /// a flag before).
     pub disable_program_group_page: Option<AutoNoYes>,
-    /// Raw disable-program-group-page byte.
+    /// `DisableProgramGroupPage` as stored; 0 before 5.3.3.
     pub disable_program_group_page_raw: u8,
 
-    // --- post-install ---
-    /// `UninstallDisplaySize` (5.3.6+; widened to u64 at 5.5.0).
+    /// `UninstallDisplaySize`: the size Add/Remove Programs shows, in bytes;
+    /// 0 lets Setup compute it (5.3.6+; 64-bit from 5.5.0).
     pub uninstall_display_size: u64,
 
-    // --- options bitset ---
-    /// Decoded `Options` set with version-mapped bit positions.
-    /// Unrecognized bits are dropped silently - the raw bytes remain
-    /// available via [`Self::options_raw`].
+    /// `LeadBytes`: the ANSI code page's double-byte lead bytes, a 256-bit
+    /// set (ANSI builds from 2.0.6 to 6.3.0).
+    pub lead_bytes: Option<[u8; 32]>,
+
+    /// `Options`, decoded; see [`HeaderOption`]. Includes the flags innoextract
+    /// adds for old versions and the 3.0.0 to 3.0.2 restart byte.
     pub options: HashSet<HeaderOption>,
-    /// Raw `Options` bitfield bytes.
+    /// `Options` as stored: the set's bytes, whose size grows with the
+    /// number of flags the version defines.
     pub options_raw: Vec<u8>,
 }
 
@@ -653,8 +962,7 @@ pub struct SetupHeader {
     records_offset: usize,
     /// Byte offset within the decompressed setup-0 buffer of the
     /// **start** of the fixed numeric tail (i.e. immediately after
-    /// the last counter). Useful for verifying the tail-size
-    /// invariants documented in `research-notes/11-fixed-tail.md`.
+    /// the last counter).
     tail_start_offset: usize,
 }
 
@@ -668,32 +976,94 @@ impl SetupHeader {
     /// [`Error`].
     pub fn parse(setup0: &[u8], version: &Version) -> Result<Self, Error> {
         let mut reader = Reader::new(setup0);
+        if version.at_least(1, 3, 0) {
+            let (mut header, _) = Self::read_record(&mut reader, version)?;
+            header.records_offset = reader.pos();
+            return Ok(header);
+        }
+        // Before 1.3.0 the header follows a u32 holding its size, and the
+        // license and info texts follow it, their sizes in the header
+        // (1.2.16 `MAIN.PAS`). They are what later releases keep in the
+        // `AnsiString` fields, and are exposed as those.
+        let size = reader.u32_le("TSetupHeader size")?;
+        let size = usize::try_from(size).map_err(|_| Error::Overflow {
+            what: "TSetupHeader size",
+        })?;
+        let start = reader.pos();
+        let mut record = Reader::new(reader.take(size, "TSetupHeader")?);
+        let (mut header, text_sizes) = Self::read_record(&mut record, version)?;
+        if record.remaining() != 0 {
+            return Err(Error::TrailingData {
+                what: "setup header",
+                len: record.remaining(),
+            });
+        }
+        header.tail_start_offset = header.tail_start_offset.saturating_add(start);
+        for (field, size) in [
+            HeaderAnsi::LicenseText,
+            HeaderAnsi::InfoBeforeText,
+            HeaderAnsi::InfoAfterText,
+        ]
+        .into_iter()
+        .zip(text_sizes)
+        {
+            let size = usize::try_from(size).map_err(|_| Error::Overflow {
+                what: "header text size",
+            })?;
+            header
+                .ansi
+                .insert(field, reader.take(size, "header text")?.to_vec());
+        }
+        header.records_offset = reader.pos();
+        Ok(header)
+    }
+
+    /// Reads the `TSetupHeader` record itself; `records_offset` is left
+    /// for [`Self::parse`]. Also returns the sizes of the license and info
+    /// texts that follow the record before 1.3.0 (zero later).
+    fn read_record(reader: &mut Reader<'_>, version: &Version) -> Result<(Self, [u32; 3]), Error> {
         let mut strings: HashMap<HeaderString, String> = HashMap::with_capacity(40);
         let mut ansi: HashMap<HeaderAnsi, Vec<u8>> = HashMap::with_capacity(4);
-        read_header_strings_and_ansi(&mut reader, version, &mut strings, &mut ansi)?;
+        read_header_strings_and_ansi(reader, version, &mut strings, &mut ansi)?;
 
         // ANSI-build LeadBytes set (`set of AnsiChar` = 256 bits = 32
         // bytes). Present for non-Unicode installers from 2.0.6 onward;
         // removed at 6.3.0 when the ANSI build was dropped (innoextract
-        // `setup/header.cpp:283-287`; research-notes/10-version-evolution.md
-        // §B.2.b "LeadBytes"). Read past - not yet exposed.
-        if version.at_least(2, 0, 6) && !version.at_least(6, 3, 0) && !version.is_unicode() {
-            reader.skip(32, "LeadBytes")?;
-        }
+        // `setup/header.cpp`).
+        let lead_bytes =
+            if version.at_least(2, 0, 6) && !version.at_least(6, 3, 0) && !version.is_unicode() {
+                Some(reader.array::<32>("LeadBytes")?)
+            } else {
+                None
+            };
 
-        let counts = read_counts(&mut reader, version)?;
+        let counts = read_counts(reader, version)?;
         let tail_start_offset = reader.pos();
-        let tail = parse_tail(&mut reader, version)?;
-        let records_offset = reader.pos();
+        // `LicenseSize`, `InfoBeforeSize`, `InfoAfterSize` (before 1.3.0).
+        let mut text_sizes = [0u32; 3];
+        if !version.at_least(1, 3, 0) {
+            for (size, what) in
+                text_sizes
+                    .iter_mut()
+                    .zip(["LicenseSize", "InfoBeforeSize", "InfoAfterSize"])
+            {
+                *size = reader.native_u32(version, what)?;
+            }
+        }
+        let mut tail = parse_tail(reader, version)?;
+        tail.lead_bytes = lead_bytes;
 
-        Ok(Self {
-            strings,
-            ansi,
-            counts,
-            tail,
-            records_offset,
-            tail_start_offset,
-        })
+        Ok((
+            Self {
+                strings,
+                ansi,
+                counts,
+                tail,
+                records_offset: 0,
+                tail_start_offset,
+            },
+            text_sizes,
+        ))
     }
 
     /// Returns the value of a header `String` field, if present in
@@ -702,8 +1072,9 @@ impl SetupHeader {
         self.strings.get(&field).map(String::as_str)
     }
 
-    /// Returns the raw bytes of a header `AnsiString` field. Always
-    /// `Some` for the four fields defined in the modern era.
+    /// Returns the raw bytes of a header `AnsiString` field (or of
+    /// [`HeaderAnsi::SignedUninstallerSignature`], a `String` before 5.2.5),
+    /// if the version has it.
     pub fn ansi(&self, field: HeaderAnsi) -> Option<&[u8]> {
         self.ansi.get(&field).map(Vec::as_slice)
     }
@@ -752,16 +1123,16 @@ impl SetupHeader {
 
     /// Returns the byte offset within the decompressed setup-0
     /// buffer where downstream record iteration should begin
-    /// (immediately after the fixed numeric tail).
+    /// (immediately after the fixed numeric tail; before 1.3.0 after the
+    /// license and info texts that follow the header).
     #[must_use]
     pub fn records_offset(&self) -> usize {
         self.records_offset
     }
 
     /// Returns the byte offset of the start of the fixed numeric
-    /// tail. `records_offset() - tail_start_offset()` gives the tail
-    /// size in bytes, which the validation table in
-    /// `research-notes/11-fixed-tail.md` lists per version.
+    /// tail. `records_offset() - tail_start_offset()` is the tail's size
+    /// in bytes; before 1.3.0 it also counts the license and info texts.
     #[must_use]
     pub fn tail_start_offset(&self) -> usize {
         self.tail_start_offset
@@ -799,16 +1170,18 @@ impl SetupHeader {
 ///    `BaseFilename` for the three info blobs and right after
 ///    `DefaultUserInfoSerial` for the compiled-code blob); 5.2.5+
 ///    moved them to the tail, after the whole string table.
-/// 2. `UninstallerSignature` is a `String` field that exists only in
-///    the narrow 5.2.1..5.3.10 window - read past, not exposed.
-/// 3. The `String` fields added at 6.4.3+ (`CloseApplicationsFilterExcludes`,
+/// 2. `SignedUninstallerSignature` exists only in the narrow
+///    5.2.1..5.3.10 window - read past as bytes, not exposed.
+/// 3. The `String` fields added at 6.4.2+ (`CloseApplicationsFilterExcludes`,
 ///    `SevenZipLibraryName`, `UsePrevious*`) come after the architecture
 ///    expressions but still ahead of the ansi tail. innoextract's reference
-///    predates them, so this part is validated against `Shared.Struct.pas`.
+///    predates them.
 ///
-/// See `research-notes/12-format-evolution-audit.md` for the
-/// per-version field-set table and `research/src/setup/header.cpp:146-281`
-/// for the upstream reference.
+/// The `header::upstream` tests check this walker against the
+/// `TSetupHeader` declaration of every release whose source is available,
+/// SetupID markers 1.3.25 through 7.1.1 (`crate::upstream`, generated by
+/// `tests/samples/build/gen-layouts.py`): for each marker it must read
+/// exactly the declared fields, in order, as the declared kind.
 fn read_header_strings_and_ansi(
     reader: &mut Reader<'_>,
     version: &Version,
@@ -852,13 +1225,15 @@ fn read_header_strings_and_ansi(
     }
     put_str(reader, HeaderString::DefaultDirName, strings)?;
     put_str(reader, HeaderString::DefaultGroupName, strings)?;
-    // Pre-3.0.0 had a separate `UninstallIconName: AnsiString`. None
-    // of our supported samples land in this range, but read past for
-    // completeness.
+    // Before 3.0.0 Setup made the uninstaller's shortcut itself.
     if !version.at_least(3, 0, 0) {
-        let _ = read_ansi_bytes(reader, "UninstallIconName")?;
+        put_str(reader, HeaderString::UninstallIconName, strings)?;
     }
-    put_str(reader, HeaderString::BaseFilename, strings)?;
+    // 7.1.1 dropped `BaseFilename`, by then empty and unused (issrc
+    // commit `f52ff3b2`, which set SetupID `7.1.1`).
+    if !version.at_least(7, 1, 1) {
+        put_str(reader, HeaderString::BaseFilename, strings)?;
+    }
     // 1.3.0..5.2.5: license/info blobs interleaved here.
     if version.at_least(1, 3, 0) && !version.at_least(5, 2, 5) {
         put_ansi(reader, HeaderAnsi::LicenseText, ansi)?;
@@ -920,8 +1295,9 @@ fn read_header_strings_and_ansi(
             strings,
         )?;
     }
-    // 6.4.3+: CloseApplicationsFilterExcludes (issrc commit `72756e57`).
-    if version.at_least(6, 4, 3) {
+    // 6.4.2+: CloseApplicationsFilterExcludes (issrc commit `72756e57`,
+    // the one that set SetupID `6.4.2`).
+    if version.at_least(6, 4, 2) {
         put_str(
             reader,
             HeaderString::CloseApplicationsFilterExcludes,
@@ -947,13 +1323,13 @@ fn read_header_strings_and_ansi(
         put_ansi(reader, HeaderAnsi::InfoBeforeText, ansi)?;
         put_ansi(reader, HeaderAnsi::InfoAfterText, ansi)?;
     }
-    // 5.2.1..5.3.10: UninstallerSignature String - read past. This narrow
-    // legacy window predates the 5.2.5 tail move, so in that era the ansi
-    // blobs are interleaved and the signature lands between InfoAfter and
-    // CompiledCode; every version in the window is < 6.4.3, so the string
-    // fields added above never coexist with it.
+    // 5.2.1..5.3.10: `SignedUninstallerSignature`. Before 5.2.5 it is the
+    // last `String` field; from 5.2.5 it is an `AnsiString` between
+    // InfoAfter and CompiledCode, raw bytes even in a Unicode build. Either
+    // way it is length-prefixed bytes, which a 5.2.1..5.2.4 ANSI build
+    // reads the same, so it is read as bytes throughout.
     if version.at_least(5, 2, 1) && !version.at_least(5, 3, 10) {
-        let _ = read_setup_string(reader, version, "UninstallerSignature")?;
+        put_ansi(reader, HeaderAnsi::SignedUninstallerSignature, ansi)?;
     }
     // 5.2.5+: compiled-code blob - the fourth `AnsiString` field.
     if version.at_least(5, 2, 5) {
@@ -961,6 +1337,37 @@ fn read_header_strings_and_ansi(
     }
 
     Ok(())
+}
+
+impl HeaderString {
+    /// Returns this field's stable identifier: its name in upstream's
+    /// `TSetupHeader` (`AppName`, `DefaultDirName`, ...), which does not
+    /// change.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        field_label(*self)
+    }
+}
+
+impl core::fmt::Display for HeaderString {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl HeaderAnsi {
+    /// Returns this field's stable identifier: its name in upstream's
+    /// `TSetupHeader` (`LicenseText`, ...), which does not change.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        ansi_label(*self)
+    }
+}
+
+impl core::fmt::Display for HeaderAnsi {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 fn field_label(f: HeaderString) -> &'static str {
@@ -977,6 +1384,7 @@ fn field_label(f: HeaderString) -> &'static str {
         HeaderString::AppVersion => "AppVersion",
         HeaderString::DefaultDirName => "DefaultDirName",
         HeaderString::DefaultGroupName => "DefaultGroupName",
+        HeaderString::UninstallIconName => "UninstallIconName",
         HeaderString::BaseFilename => "BaseFilename",
         HeaderString::UninstallFilesDir => "UninstallFilesDir",
         HeaderString::UninstallDisplayName => "UninstallDisplayName",
@@ -1012,41 +1420,65 @@ fn ansi_label(f: HeaderAnsi) -> &'static str {
         HeaderAnsi::LicenseText => "LicenseText",
         HeaderAnsi::InfoBeforeText => "InfoBeforeText",
         HeaderAnsi::InfoAfterText => "InfoAfterText",
+        HeaderAnsi::SignedUninstallerSignature => "SignedUninstallerSignature",
         HeaderAnsi::CompiledCodeText => "CompiledCodeText",
     }
 }
 
+/// Reads the `Num*Entries` counts. Each exists from the release that
+/// introduced its record type (innoextract `setup/header.cpp`, checked
+/// against every `TSetupHeader` declaration by `crate::upstream`); a count
+/// the version does not carry is zero.
 fn read_counts(reader: &mut Reader<'_>, version: &Version) -> Result<EntryCounts, Error> {
+    // Before 4.0.0 there is no count: from 2.0.1 one `TSetupLangOptions`
+    // record follows the header (innoextract `setup/header.cpp`; the 2.0.0
+    // boundary is innoextract's, no 2.0.0 source survives), before that none.
+    let languages = if version.at_least(4, 0, 0) {
+        reader.u32_le("NumLanguageEntries")?
+    } else {
+        u32::from(version.at_least(2, 0, 1))
+    };
+    let mut count = |present: bool, what: &'static str| -> Result<u32, Error> {
+        if present { reader.u32_le(what) } else { Ok(0) }
+    };
+    let isx = version.is_isx();
+    let custom_messages = count(version.at_least(4, 2, 1), "NumCustomMessageEntries")?;
+    let permissions = count(version.at_least(4, 1, 0), "NumPermissionEntries")?;
+    let types = count(version.at_least(2, 0, 0) || isx, "NumTypeEntries")?;
+    let components = count(version.at_least(2, 0, 0) || isx, "NumComponentEntries")?;
+    let tasks = count(
+        version.at_least(2, 0, 0) || (isx && version.at_least(1, 3, 17)),
+        "NumTaskEntries",
+    )?;
     Ok(EntryCounts {
-        languages: reader.u32_le("NumLanguageEntries")?,
-        custom_messages: reader.u32_le("NumCustomMessageEntries")?,
-        permissions: reader.u32_le("NumPermissionEntries")?,
-        types: reader.u32_le("NumTypeEntries")?,
-        components: reader.u32_le("NumComponentEntries")?,
-        tasks: reader.u32_le("NumTaskEntries")?,
-        directories: reader.u32_le("NumDirEntries")?,
+        languages,
+        custom_messages,
+        permissions,
+        types,
+        components,
+        tasks,
+        directories: reader.native_u32(version, "NumDirEntries")?,
         iss_sig_keys: if version.at_least(6, 5, 0) {
             Some(reader.u32_le("NumISSigKeyEntries")?)
         } else {
             None
         },
-        files: reader.u32_le("NumFileEntries")?,
-        file_locations: reader.u32_le("NumFileLocationEntries")?,
-        icons: reader.u32_le("NumIconEntries")?,
-        ini_entries: reader.u32_le("NumIniEntries")?,
-        registry: reader.u32_le("NumRegistryEntries")?,
-        install_deletes: reader.u32_le("NumInstallDeleteEntries")?,
-        uninstall_deletes: reader.u32_le("NumUninstallDeleteEntries")?,
-        run: reader.u32_le("NumRunEntries")?,
-        uninstall_run: reader.u32_le("NumUninstallRunEntries")?,
+        files: reader.native_u32(version, "NumFileEntries")?,
+        file_locations: reader.native_u32(version, "NumFileLocationEntries")?,
+        icons: reader.native_u32(version, "NumIconEntries")?,
+        ini_entries: reader.native_u32(version, "NumIniEntries")?,
+        registry: reader.native_u32(version, "NumRegistryEntries")?,
+        install_deletes: reader.native_u32(version, "NumInstallDeleteEntries")?,
+        uninstall_deletes: reader.native_u32(version, "NumUninstallDeleteEntries")?,
+        run: reader.native_u32(version, "NumRunEntries")?,
+        uninstall_run: reader.native_u32(version, "NumUninstallRunEntries")?,
     })
 }
 
-/// Parses the fixed numeric / enum / set tail of `TSetupHeader` per
-/// `research-notes/11-fixed-tail.md`. The conditional ladder
-/// mirrors innoextract's `header::load`
-/// (`research/src/setup/header.cpp:340-547`) and covers every
-/// version from the 1.x..7.x history we recognize.
+/// Parses the fixed numeric / enum / set tail of `TSetupHeader`. The
+/// conditional ladder follows innoextract's `header::load`, extended past
+/// it with upstream's own declarations, and is checked for every marker by
+/// the `crate::upstream` tests.
 fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, Error> {
     // Format 7.0.0.3+ inserted `CompiledCodeVersion: Cardinal` between
     // the 18 counts and `MinVersion`. The cutover landed at issrc
@@ -1073,11 +1505,14 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         }
     }
 
-    // 5.5.7+ removed image_back_color; pre-5.5.7 reads a u32 here.
+    // 5.5.7 removed WizardImageBackColor; before, a u32 here.
     if !version.at_least(5, 5, 7) {
-        // Parsed only to keep the cursor correct for older installers
-        // that ship this field; not yet exposed.
-        let _image_back_color = reader.u32_le("ImageBackColor")?;
+        tail.wizard_image_back_color = Some(reader.u32_le("WizardImageBackColor")?);
+    }
+    // 2.0.0..5.0.4: WizardSmallImageBackColor, dropped with SetupID 5.0.4
+    // (innoextract `setup/header.cpp`; ISX builds keep it).
+    if (version.at_least(2, 0, 0) && !version.at_least(5, 0, 4)) || version.is_isx() {
+        tail.wizard_small_image_back_color = Some(reader.u32_le("WizardSmallImageBackColor")?);
     }
 
     // 6.0+ wizard layout (Inno Setup 6 introduced WizardStyle and
@@ -1094,9 +1529,9 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         tail.wizard_size_percent_y = reader.u32_le("WizardSizePercentY")?;
         let raw = reader.u8("WizardDarkStyle")?;
         tail.wizard_style_raw = raw;
-        // The 6.6.0 enum is `wdsAuto / wdsClassic / wdsModern / wdsDark`;
-        // we leave `wizard_style` as None (decoder is for the older
-        // `wsClassic / wsModern` enum) and surface only the raw byte.
+        tail.wizard_dark_style = WizardDarkStyle::from_raw(raw);
+        // The 6.6.0 enum is `wdsLight / wdsDark / wdsDynamic`, a different
+        // type in the same slot; `wizard_style` stays None.
         tail.wizard_style = None;
     } else if version.at_least(6, 0, 0) {
         let raw = reader.u8("WizardStyle")?;
@@ -1114,7 +1549,8 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
     }
 
     // Wizard background colors. Declaration-order layout:
-    //   6.5.0+:   ImageBack, SmallImageBack: Integer
+    //   6.5.2+:   ImageBack, SmallImageBack: Integer (SetupID 6.5.2; 6.5.0
+    //             and 6.5.1 have neither)
     //   6.7.0+:    + BackColor: Integer (interspersed inside the
     //              first triple)
     //   6.6.0+:   + ImageBackDynamicDark, SmallImageBackDynamicDark: Integer
@@ -1124,25 +1560,30 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
     //   6.7.0+:    + BackImageOpacity: Byte; LightControlStyling: Byte
     // We read past these to keep the cursor aligned; downstream
     // typed accessors land when callers ask for them.
-    if version.at_least(6, 5, 0) {
-        let _wiz_image_back = reader.u32_le("WizardImageBackColor")?;
-        let _wiz_small_image_back = reader.u32_le("WizardSmallImageBackColor")?;
+    if version.at_least(6, 5, 2) {
+        tail.wizard_image_back_color = Some(reader.u32_le("WizardImageBackColor")?);
+        tail.wizard_small_image_back_color = Some(reader.u32_le("WizardSmallImageBackColor")?);
         if version.at_least(6, 7, 0) {
-            let _wiz_back_color = reader.u32_le("WizardBackColor")?;
+            tail.wizard_back_color = Some(reader.u32_le("WizardBackColor")?);
         }
     }
     if version.at_least(6, 6, 0) {
-        let _wiz_image_back_dyn = reader.u32_le("WizardImageBackColorDynamicDark")?;
-        let _wiz_small_image_back_dyn = reader.u32_le("WizardSmallImageBackColorDynamicDark")?;
+        tail.wizard_image_back_color_dynamic_dark =
+            Some(reader.u32_le("WizardImageBackColorDynamicDark")?);
+        tail.wizard_small_image_back_color_dynamic_dark =
+            Some(reader.u32_le("WizardSmallImageBackColorDynamicDark")?);
         if version.at_least(6, 7, 0) {
-            let _wiz_back_color_dyn = reader.u32_le("WizardBackColorDynamicDark")?;
+            tail.wizard_back_color_dynamic_dark =
+                Some(reader.u32_le("WizardBackColorDynamicDark")?);
         }
     }
     if version.at_least(6, 6, 1) {
-        let _wiz_image_opacity = reader.u8("WizardImageOpacity")?;
+        tail.wizard_image_opacity = Some(reader.u8("WizardImageOpacity")?);
         if version.at_least(6, 7, 0) {
-            let _wiz_back_image_opacity = reader.u8("WizardBackImageOpacity")?;
-            let _wiz_light_control_styling = reader.u8("WizardLightControlStyling")?;
+            tail.wizard_back_image_opacity = Some(reader.u8("WizardBackImageOpacity")?);
+            let raw = reader.u8("WizardLightControlStyling")?;
+            tail.wizard_light_control_styling_raw = raw;
+            tail.wizard_light_control_styling = WizardLightControlStyling::from_raw(raw);
         }
     }
 
@@ -1185,9 +1626,15 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         tail.slices_per_disk = 1;
     }
 
-    // Pre-3.0.3 install-mode byte (skipped past).
-    if version.at_least(3, 0, 0) && !version.at_least(3, 0, 3) {
-        let _install_mode = reader.u8("InstallMode")?;
+    // 2.0.0..5.0.0 install-mode byte (skipped past): `InstallMode:
+    // (imNormal, imSilent, imVerySilent)` in every TSetupHeader of that
+    // range (innoextract `setup/header.cpp`; ISX from 1.3.4).
+    if (version.at_least(2, 0, 0) && !version.at_least(5, 0, 0))
+        || (version.is_isx() && version.at_least(1, 3, 4))
+    {
+        let raw = reader.u8("InstallMode")?;
+        tail.install_mode_raw = raw;
+        tail.install_mode = InstallMode::from_raw(raw);
     }
 
     // Uninstall log mode (1.3.0+).
@@ -1200,7 +1647,9 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
     // Pre-5.0 uninstall_style. From 5.0 the value is forced to
     // `Modern` and not on the wire.
     if !version.at_least(5, 0, 0) && version.at_least(2, 0, 0) {
-        let _uninstall_style = reader.u8("UninstallStyle")?;
+        let raw = reader.u8("UninstallStyle")?;
+        tail.uninstall_style_raw = raw;
+        tail.uninstall_style = UninstallStyle::from_raw(raw);
     }
 
     // 1.3.6+ DirExistsWarning.
@@ -1210,11 +1659,14 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         tail.dir_exists_warning = AutoNoYes::from_raw(raw);
     }
 
-    // 3.0.0..3.0.3 has a u8 (auto-no-yes) for AlwaysRestart vs
-    // RestartIfNeededByRun - encoded in Options on later versions.
-    if version.at_least(3, 0, 0) && !version.at_least(3, 0, 3) {
-        let _val = reader.u8("RestartMode")?;
-    }
+    // 3.0.0..3.0.3: one auto/no/yes byte stands for the two restart flags
+    // later releases store in Options; applied to them below
+    // (innoextract `setup/header.cpp`).
+    let restart = if version.at_least(3, 0, 0) && !version.at_least(3, 0, 3) {
+        AutoNoYes::from_raw(reader.u8("AlwaysRestart")?)
+    } else {
+        None
+    };
 
     // 5.3.7+ PrivilegesRequired (1 byte). 3.0.4..5.3.7 uses an older
     // mapping.
@@ -1228,9 +1680,9 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         tail.privileges_required = decode_privileges_required_v0(raw);
     }
 
-    // 5.7.0+ PrivilegesRequiredOverridesAllowed (set of 2 bits → 1 byte).
-    if version.at_least(5, 7, 0) {
-        let raw = reader.set_bytes(2, true, "PrivilegesRequiredOverridesAllowed")?;
+    // 6.0.0+ PrivilegesRequiredOverridesAllowed (set of 2 bits, 1 byte).
+    if version.at_least(6, 0, 0) {
+        let raw = reader.set_bytes(2, version, "PrivilegesRequiredOverridesAllowed")?;
         tail.privileges_required_overrides = decode_overrides_set(&raw);
         tail.privileges_required_overrides_raw = raw;
     }
@@ -1252,31 +1704,34 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         tail.compress_method = decode_compress_method(raw, version);
     }
 
-    // Architectures. 5.1.0..5.6.0 uses 4-arch flags; 5.6.0..6.3.0
-    // uses 5-arch flags. From 6.3.0 these are encoded as String
-    // expressions in the header strings (already read above).
+    // Architectures. 5.1.0..5.5.7 uses 4-arch flags; from 5.5.7 5-arch
+    // flags: 5.6.0 appended `paARM64` but kept SetupID 5.5.7, and the set
+    // is one byte either way, so the earlier releases simply never set it.
+    // From 6.3.0 these are String expressions in the header strings
+    // (already read above).
     if version.at_least(6, 3, 0) {
         // String expressions; nothing on the wire here.
-    } else if version.at_least(5, 6, 0) {
-        let raw = reader.set_bytes(5, true, "ArchitecturesAllowed")?;
+    } else if version.at_least(5, 5, 7) {
+        let raw = reader.set_bytes(5, version, "ArchitecturesAllowed")?;
         tail.architectures_allowed_raw = raw.first().copied();
         tail.architectures_allowed = Some(decode_arch_set_v1(&raw));
-        let raw = reader.set_bytes(5, true, "ArchitecturesInstallIn64BitMode")?;
+        let raw = reader.set_bytes(5, version, "ArchitecturesInstallIn64BitMode")?;
         tail.architectures_install_in_64bit_mode_raw = raw.first().copied();
         tail.architectures_install_in_64bit_mode = Some(decode_arch_set_v1(&raw));
     } else if version.at_least(5, 1, 0) {
-        let raw = reader.set_bytes(4, true, "ArchitecturesAllowed")?;
+        let raw = reader.set_bytes(4, version, "ArchitecturesAllowed")?;
         tail.architectures_allowed_raw = raw.first().copied();
         tail.architectures_allowed = Some(decode_arch_set_v0(&raw));
-        let raw = reader.set_bytes(4, true, "ArchitecturesInstallIn64BitMode")?;
+        let raw = reader.set_bytes(4, version, "ArchitecturesInstallIn64BitMode")?;
         tail.architectures_install_in_64bit_mode_raw = raw.first().copied();
         tail.architectures_install_in_64bit_mode = Some(decode_arch_set_v0(&raw));
     }
 
     // 5.2.1..5.3.10 has signed-uninstaller fields - read past.
     if version.at_least(5, 2, 1) && !version.at_least(5, 3, 10) {
-        let _sz = reader.u32_le("SignedUninstallerOriginalSize")?;
-        let _crc = reader.u32_le("SignedUninstallerHeaderChecksum")?;
+        tail.signed_uninstaller_original_size = Some(reader.u32_le("SignedUninstallerOrigSize")?);
+        tail.signed_uninstaller_header_checksum =
+            Some(reader.u32_le("SignedUninstallerHdrChecksum")?);
     }
 
     // 5.3.3+ DisableDirPage / DisableProgramGroupPage.
@@ -1305,11 +1760,35 @@ fn parse_tail(reader: &mut Reader<'_>, version: &Version) -> Result<HeaderTail, 
         let _pad = reader.u8("BlackBoxPad")?;
     }
 
-    // Options bitset (always present).
-    let bit_count = options_bit_count(version);
-    let raw = reader.set_bytes(bit_count, true, "Options")?;
+    // Options bitset (always present). `shUnusedPadding = 56` is the last
+    // member's ordinal, so the set is that many bits plus one.
+    let mut bit_count = options_bit_table(version).len();
+    if version.at_least(6, 7, 0) {
+        bit_count = 57;
+    }
+    let raw = reader.set_bytes(bit_count, version, "Options")?;
     tail.options = decode_options(&raw, version);
+    match restart {
+        Some(AutoNoYes::Yes) => {
+            tail.options.insert(HeaderOption::AlwaysRestart);
+        }
+        Some(AutoNoYes::Auto) => {
+            tail.options.insert(HeaderOption::RestartIfNeededByRun);
+        }
+        _ => {}
+    }
     tail.options_raw = raw;
+
+    // Before 4.1.5 there is no CompressMethod: setup-1 is bzip2 when the
+    // compiler set `shBzipUsed` (2.0.17+), zlib otherwise (innoextract
+    // `setup/header.cpp`).
+    if !version.at_least(4, 1, 5) {
+        tail.compress_method = Some(if tail.options.contains(&HeaderOption::BzipUsed) {
+            CompressMethod::Bzip2
+        } else {
+            CompressMethod::Zlib
+        });
+    }
 
     Ok(tail)
 }
@@ -1334,6 +1813,61 @@ impl ImageAlphaFormat {
             0 => Some(Self::Ignored),
             1 => Some(Self::Defined),
             2 => Some(Self::Premultiplied),
+            _ => None,
+        }
+    }
+}
+
+impl WizardDarkStyle {
+    /// The variant for a stored byte (`wizard_style_raw`), or [`None`] for a value
+    /// this crate does not know.
+    #[must_use]
+    pub fn from_raw(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::Light),
+            1 => Some(Self::Dark),
+            2 => Some(Self::Dynamic),
+            _ => None,
+        }
+    }
+}
+
+impl WizardLightControlStyling {
+    /// The variant for a stored byte (`wizard_light_control_styling_raw`), or [`None`] for a value
+    /// this crate does not know.
+    #[must_use]
+    pub fn from_raw(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::All),
+            1 => Some(Self::AllButButtons),
+            2 => Some(Self::OnlyRequired),
+            _ => None,
+        }
+    }
+}
+
+impl InstallMode {
+    /// The variant for a stored byte (`install_mode_raw`), or [`None`] for a value
+    /// this crate does not know.
+    #[must_use]
+    pub fn from_raw(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::Normal),
+            1 => Some(Self::Silent),
+            2 => Some(Self::VerySilent),
+            _ => None,
+        }
+    }
+}
+
+impl UninstallStyle {
+    /// The variant for a stored byte (`uninstall_style_raw`), or [`None`] for a value
+    /// this crate does not know.
+    #[must_use]
+    pub fn from_raw(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::Classic),
+            1 => Some(Self::Modern),
             _ => None,
         }
     }
@@ -1452,7 +1986,7 @@ fn decode_overrides_set(raw: &[u8]) -> HashSet<PrivilegesRequiredOverride> {
     out
 }
 
-/// 5.6.0+ (5-arch) layout: Unknown, X86, Amd64, IA64, Arm64.
+/// 5.5.7+ (5-arch) layout: Unknown, X86, Amd64, IA64, Arm64.
 fn decode_arch_set_v1(raw: &[u8]) -> HashSet<Architecture> {
     let table = [
         Architecture::Unknown,
@@ -1493,621 +2027,140 @@ fn bit_at(raw: &[u8], bit: usize) -> bool {
         .is_some_and(|b| (b >> bit_idx) & 1 == 1)
 }
 
-/// Returns the on-wire member count of `TSetupHeaderOption` for
-/// `version`. Derived from the same per-version slot table the
-/// decoder walks ([`static_options_bit_table`] for 5.5.0+,
-/// [`dynamic_options_bit_table`] for older), so the count and the
-/// decode are guaranteed to agree.
-fn options_bit_count(version: &Version) -> usize {
-    if version.at_least(5, 5, 0) {
-        static_options_bit_table(version).len()
-    } else {
-        dynamic_options_bit_table(version).len()
-    }
-}
-
+/// Decodes `TSetupHeader.Options`. Before 4.0.9 cancelling during the
+/// install was always allowed and before 5.5.0 network drives always were;
+/// neither had a flag yet, so both are added, as innoextract does, and the
+/// set reads as Setup behaves.
 fn decode_options(raw: &[u8], version: &Version) -> HashSet<HeaderOption> {
-    let mut out = HashSet::new();
-    if version.at_least(5, 5, 0) {
-        // 5.5.0+ uses one of the curated static slot tables - preferred
-        // because the bit positions are stable and easy to audit.
-        for (i, slot) in static_options_bit_table(version).iter().enumerate() {
-            if bit_at(raw, i)
-                && let Some(opt) = slot
-            {
-                out.insert(*opt);
-            }
-        }
-    } else {
-        // Pre-5.5.0: build the slot table on the fly from the same
-        // version-conditional walk as `options_bit_count`, mirroring
-        // innoextract's `header::load_flags`.
-        for (i, slot) in dynamic_options_bit_table(version).into_iter().enumerate() {
-            if bit_at(raw, i)
-                && let Some(opt) = slot
-            {
-                out.insert(opt);
-            }
-        }
+    let mut out: HashSet<HeaderOption> = options_bit_table(version)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(bit, slot)| slot.filter(|_| bit_at(raw, bit)))
+        .collect();
+    if !version.at_least(4, 0, 9) {
+        out.insert(HeaderOption::AllowCancelDuringInstall);
+    }
+    if !version.at_least(5, 5, 0) {
+        out.insert(HeaderOption::AllowNetworkDrive);
     }
     out
 }
 
-/// Returns the curated bit table for 5.5.0+ versions. The table maps
-/// each on-wire bit index to a [`HeaderOption`] (or `None` for slots
-/// reserved for flags that don't have a public name in our union).
-fn static_options_bit_table(version: &Version) -> &'static [Option<HeaderOption>] {
-    if version.at_least(6, 7, 0) {
-        OPTIONS_V6_7
-    } else if version.at_least(6, 5, 0) {
-        OPTIONS_V6_5
-    } else if version.at_least(6, 4, 0) {
-        OPTIONS_V6_4
-    } else if version.at_least(6, 3, 0) {
-        OPTIONS_V6_3
-    } else if version.at_least(6, 0, 0) {
-        OPTIONS_V6_1
-    } else if version.at_least(5, 5, 7) {
-        // 5.5.7..6.0.0. Ordering mirrors innoextract `header::load_flags`
-        // for that range. The ANSI build adds `ShowUndisplayableLanguages`
-        // at bit 39; Unicode builds skip that bit and shift the tail down
-        // by one. We model the ANSI variant - bits 0..38 are identical
-        // for both, which covers the Password (bit 10) and
-        // EncryptionUsed (bit 37) lookups callers actually care about.
-        OPTIONS_V5_5_7
-    } else {
-        // 5.5.0..5.5.7: same as `OPTIONS_V5_5_7` minus the trailing
-        // `ForceCloseApplications` slot.
-        OPTIONS_V5_5_0
-    }
-}
-
-/// Builds the bit-to-[`HeaderOption`] mapping for pre-5.5.0 versions
-/// by walking innoextract's `header::load_flags` (`research/src/setup/header.cpp:569-733`)
-/// in declaration order. Each gated `flagreader.add(...)` call
-/// contributes one slot, with `None` for flag names that don't have
-/// a [`HeaderOption`] counterpart in our union (legacy bits like
-/// `BackSolid` or `BzipUsed`).
+/// The `TSetupHeaderOption` members `version` declares, in declaration
+/// order: member `i` is bit `i` of `Options`. `None` is padding.
 ///
-/// Kept in lock-step with [`options_bit_count`] so the two functions
-/// always agree on the number of slots.
-fn dynamic_options_bit_table(version: &Version) -> Vec<Option<HeaderOption>> {
-    let mut t: Vec<Option<HeaderOption>> = Vec::with_capacity(48);
-
-    t.push(Some(HeaderOption::DisableStartupPrompt));
-    if !version.at_least(5, 3, 10) {
-        t.push(None); // Uninstallable (no HeaderOption counterpart pre-5.3.10)
-    }
-    t.push(Some(HeaderOption::CreateAppDir));
-    if !version.at_least(5, 3, 3) {
-        t.push(None); // DisableDirPage
-    }
-    if !version.at_least(1, 3, 6) {
-        t.push(None); // DisableDirExistsWarning
-    }
-    if !version.at_least(5, 3, 3) {
-        t.push(None); // DisableProgramGroupPage
-    }
-    t.push(Some(HeaderOption::AllowNoIcons));
-    if !version.at_least(3, 0, 0) || version.at_least(3, 0, 3) {
-        t.push(Some(HeaderOption::AlwaysRestart));
-    }
-    if !version.at_least(1, 3, 3) {
-        t.push(None); // BackSolid
-    }
-    t.push(Some(HeaderOption::AlwaysUsePersonalGroup));
-    if !version.at_least_4(6, 4, 0, 1) {
-        t.push(Some(HeaderOption::WindowVisible));
-        t.push(Some(HeaderOption::WindowShowCaption));
-        t.push(Some(HeaderOption::WindowResizable));
-        t.push(Some(HeaderOption::WindowStartMaximized));
-    }
-    t.push(Some(HeaderOption::EnableDirDoesntExistWarning));
-    if !version.at_least(4, 1, 2) {
-        t.push(None); // DisableAppendDir
-    }
-    t.push(Some(HeaderOption::Password));
-    if version.at_least(1, 2, 6) {
-        t.push(Some(HeaderOption::AllowRootDirectory));
-    }
-    if version.at_least(1, 2, 14) {
-        t.push(Some(HeaderOption::DisableFinishedPage));
-    }
-    if !version.at_least(3, 0, 4) {
-        t.push(None); // AdminPrivilegesRequired
-    }
-    if !version.at_least(3, 0, 0) {
-        t.push(None); // AlwaysCreateUninstallIcon
-    }
-    if !version.at_least(1, 3, 6) {
-        t.push(None); // OverwriteUninstRegEntries
-    }
-    if !version.at_least(5, 6, 1) {
-        t.push(None); // ChangesAssociations (flag-only pre-5.6.1)
-    }
-    if version.at_least(1, 3, 0) && !version.at_least(5, 3, 8) {
-        t.push(None); // CreateUninstallRegKey
-    }
-    if version.at_least(1, 3, 1) {
-        t.push(Some(HeaderOption::UsePreviousAppDir));
-    }
-    if version.at_least(1, 3, 3) && !version.at_least_4(6, 4, 0, 1) {
-        t.push(Some(HeaderOption::BackColorHorizontal));
-    }
-    if version.at_least(1, 3, 10) {
-        t.push(Some(HeaderOption::UsePreviousGroup));
-    }
-    if version.at_least(1, 3, 20) {
-        t.push(Some(HeaderOption::UpdateUninstallLogAppName));
-    }
-    if version.at_least(2, 0, 0) || (version.is_isx() && version.at_least(1, 3, 10)) {
-        t.push(Some(HeaderOption::UsePreviousSetupType));
-    }
-    if version.at_least(2, 0, 0) {
-        t.push(Some(HeaderOption::DisableReadyMemo));
-        t.push(Some(HeaderOption::AlwaysShowComponentsList));
-        t.push(Some(HeaderOption::FlatComponentsList));
-        t.push(Some(HeaderOption::ShowComponentSizes));
-        t.push(Some(HeaderOption::UsePreviousTasks));
-        t.push(Some(HeaderOption::DisableReadyPage));
-    }
-    if version.at_least(2, 0, 7) {
-        t.push(Some(HeaderOption::AlwaysShowDirOnReadyPage));
-        t.push(Some(HeaderOption::AlwaysShowGroupOnReadyPage));
-    }
-    if version.at_least(2, 0, 17) && !version.at_least(4, 1, 5) {
-        t.push(None); // BzipUsed
-    }
-    if version.at_least(2, 0, 18) {
-        t.push(Some(HeaderOption::AllowUNCPath));
-    }
-    if version.at_least(3, 0, 0) {
-        t.push(Some(HeaderOption::UserInfoPage));
-        t.push(Some(HeaderOption::UsePreviousUserInfo));
-    }
-    if version.at_least(3, 0, 1) {
-        t.push(Some(HeaderOption::UninstallRestartComputer));
-    }
-    if version.at_least(3, 0, 3) {
-        t.push(Some(HeaderOption::RestartIfNeededByRun));
-    }
-    if version.at_least(4, 0, 0) || (version.is_isx() && version.at_least(3, 0, 3)) {
-        t.push(Some(HeaderOption::ShowTasksTreeLines));
-    }
-    if version.at_least(4, 0, 0) && !version.at_least(4, 0, 10) {
-        t.push(None); // ShowLanguageDialog
-    }
-    if version.at_least(4, 0, 1) && !version.at_least(4, 0, 10) {
-        t.push(None); // DetectLanguageUsingLocale
-    }
-    if version.at_least(4, 0, 9) {
-        t.push(Some(HeaderOption::AllowCancelDuringInstall));
-    }
-    if version.at_least(4, 1, 3) {
-        t.push(Some(HeaderOption::WizardImageStretch));
-    }
-    if version.at_least(4, 1, 8) {
-        t.push(Some(HeaderOption::AppendDefaultDirName));
-        t.push(Some(HeaderOption::AppendDefaultGroupName));
-    }
-    if version.at_least(4, 2, 2) {
-        t.push(Some(HeaderOption::EncryptionUsed));
-    }
-    if version.at_least(5, 0, 4) && !version.at_least(5, 6, 1) {
-        t.push(None); // ChangesEnvironment (flag-only pre-5.6.1)
-    }
-    if version.at_least(5, 1, 7) && !version.is_unicode() {
-        t.push(None); // ShowUndisplayableLanguages (ANSI-only)
-    }
-    if version.at_least(5, 1, 13) {
-        t.push(Some(HeaderOption::SetupLogging));
-    }
-    if version.at_least(5, 2, 1) {
-        t.push(Some(HeaderOption::SignedUninstaller));
-    }
-    if version.at_least(5, 3, 8) {
-        t.push(Some(HeaderOption::UsePreviousLanguage));
-    }
-    if version.at_least(5, 3, 9) {
-        t.push(Some(HeaderOption::DisableWelcomePage));
-    }
-    // 5.5.0+ slots are unreachable here - the static tables cover that
-    // range - but include them for symmetry with `options_bit_count`.
-    if version.at_least(5, 5, 0) {
-        t.push(Some(HeaderOption::CloseApplications));
-        t.push(Some(HeaderOption::RestartApplications));
-        t.push(Some(HeaderOption::AllowNetworkDrive));
-    }
-    if version.at_least(5, 5, 7) {
-        t.push(Some(HeaderOption::ForceCloseApplications));
-    }
-    if version.at_least(6, 0, 0) {
-        t.push(Some(HeaderOption::AppNameHasConsts));
-        t.push(Some(HeaderOption::UsePreviousPrivileges));
-        t.push(Some(HeaderOption::WizardResizable));
-    }
-    if version.at_least(6, 3, 0) {
-        t.push(Some(HeaderOption::UninstallLogging));
-    }
-    t
+/// One ladder covers every format. Its gates are where each member enters
+/// and leaves `Struct.pas` / `Shared.Struct.pas`, read from every release
+/// whose source is available (the `crate::upstream` tests check each bit of
+/// every marker against those declarations), refined between those releases
+/// by innoextract's `header::load_flags`. Members never move relative to
+/// one another, so the order alone places each bit.
+fn options_bit_table(version: &Version) -> Vec<Option<HeaderOption>> {
+    use HeaderOption as O;
+    let v = |a, b, c| version.at_least(a, b, c);
+    let v4 = |a, b, c, d| version.at_least_4(a, b, c, d);
+    let not16 = !version.is_16bit();
+    let ladder: &[(bool, Option<HeaderOption>)] = &[
+        (true, Some(O::DisableStartupPrompt)),
+        (!v(5, 3, 10), Some(O::Uninstallable)),
+        (true, Some(O::CreateAppDir)),
+        (!v(5, 3, 3), Some(O::DisableDirPage)),
+        (!v(1, 3, 6), Some(O::DisableDirExistsWarning)),
+        (!v(5, 3, 3), Some(O::DisableProgramGroupPage)),
+        (true, Some(O::AllowNoIcons)),
+        (!v(3, 0, 0) || v(3, 0, 3), Some(O::AlwaysRestart)),
+        (!v(1, 3, 3), Some(O::BackSolid)),
+        (true, Some(O::AlwaysUsePersonalGroup)),
+        (!v4(6, 4, 0, 1), Some(O::WindowVisible)),
+        (!v4(6, 4, 0, 1), Some(O::WindowShowCaption)),
+        (!v4(6, 4, 0, 1), Some(O::WindowResizable)),
+        (!v4(6, 4, 0, 1), Some(O::WindowStartMaximized)),
+        (true, Some(O::EnableDirDoesntExistWarning)),
+        (!v(4, 1, 2), Some(O::DisableAppendDir)),
+        (true, Some(O::Password)),
+        (v(1, 2, 6), Some(O::AllowRootDirectory)),
+        // 1.2.14 added it, but 1.2.10 to 1.2.16 all write SetupID 1.2.10,
+        // the oldest there is; an earlier release just never sets the bit.
+        (true, Some(O::DisableFinishedPage)),
+        (not16 && !v(3, 0, 4), Some(O::AdminPrivilegesRequired)),
+        (not16 && !v(3, 0, 0), Some(O::AlwaysCreateUninstallIcon)),
+        (not16 && !v(1, 3, 6), Some(O::OverwriteUninstRegEntries)),
+        (not16 && !v(6, 0, 0), Some(O::ChangesAssociations)),
+        (v(1, 3, 0) && !v(5, 3, 8), Some(O::CreateUninstallRegKey)),
+        (v(1, 3, 1) && !v(6, 7, 0), Some(O::UsePreviousAppDir)),
+        (v(1, 3, 3) && !v4(6, 4, 0, 1), Some(O::BackColorHorizontal)),
+        (v(1, 3, 10) && !v(6, 7, 0), Some(O::UsePreviousGroup)),
+        (v(1, 3, 20), Some(O::UpdateUninstallLogAppName)),
+        (
+            (v(2, 0, 0) || (version.is_isx() && v(1, 3, 10))) && !v(6, 7, 0),
+            Some(O::UsePreviousSetupType),
+        ),
+        (v(2, 0, 0), Some(O::DisableReadyMemo)),
+        (v(2, 0, 0), Some(O::AlwaysShowComponentsList)),
+        (v(2, 0, 0), Some(O::FlatComponentsList)),
+        (v(2, 0, 0), Some(O::ShowComponentSizes)),
+        (v(2, 0, 0) && !v(6, 7, 0), Some(O::UsePreviousTasks)),
+        (v(2, 0, 0), Some(O::DisableReadyPage)),
+        (v(2, 0, 7), Some(O::AlwaysShowDirOnReadyPage)),
+        (v(2, 0, 7), Some(O::AlwaysShowGroupOnReadyPage)),
+        (v(2, 0, 17) && !v(4, 1, 5), Some(O::BzipUsed)),
+        (v(2, 0, 18), Some(O::AllowUNCPath)),
+        (v(3, 0, 0), Some(O::UserInfoPage)),
+        (v(3, 0, 0) && !v(6, 7, 0), Some(O::UsePreviousUserInfo)),
+        (v(3, 0, 1), Some(O::UninstallRestartComputer)),
+        (v(3, 0, 3), Some(O::RestartIfNeededByRun)),
+        (
+            v(4, 0, 0) || (version.is_isx() && v(3, 0, 3)),
+            Some(O::ShowTasksTreeLines),
+        ),
+        (v(4, 0, 0) && !v(4, 0, 10), Some(O::ShowLanguageDialog)),
+        (
+            v(4, 0, 1) && !v(4, 0, 10),
+            Some(O::DetectLanguageUsingLocale),
+        ),
+        (v(4, 0, 9), Some(O::AllowCancelDuringInstall)),
+        (v(4, 1, 3), Some(O::WizardImageStretch)),
+        (v(4, 1, 8), Some(O::AppendDefaultDirName)),
+        (v(4, 1, 8), Some(O::AppendDefaultGroupName)),
+        (v(4, 2, 2) && !v(6, 5, 0), Some(O::EncryptionUsed)),
+        (v(5, 0, 4) && !v(6, 0, 0), Some(O::ChangesEnvironment)),
+        (
+            v(5, 1, 7) && !v(6, 0, 0) && !version.is_unicode(),
+            Some(O::ShowUndisplayableLanguages),
+        ),
+        (v(5, 1, 13), Some(O::SetupLogging)),
+        (v(5, 2, 1), Some(O::SignedUninstaller)),
+        (v(5, 3, 8), Some(O::UsePreviousLanguage)),
+        (v(5, 3, 9), Some(O::DisableWelcomePage)),
+        (v(5, 5, 0), Some(O::CloseApplications)),
+        (v(5, 5, 0), Some(O::RestartApplications)),
+        (v(5, 5, 0), Some(O::AllowNetworkDrive)),
+        (v(5, 5, 7), Some(O::ForceCloseApplications)),
+        (v(6, 0, 0), Some(O::AppNameHasConsts)),
+        (v(6, 0, 0), Some(O::UsePreviousPrivileges)),
+        (v(6, 0, 0) && !v(6, 6, 0), Some(O::WizardResizable)),
+        (v(6, 3, 0), Some(O::UninstallLogging)),
+        (v(6, 6, 0), Some(O::WizardModern)),
+        (v(6, 6, 0), Some(O::WizardBorderStyled)),
+        (v(6, 6, 0), Some(O::WizardKeepAspectRatio)),
+        (
+            v(6, 6, 0) && !v(6, 7, 0),
+            Some(O::WizardLightButtonsUnstyled),
+        ),
+        (v(6, 7, 0), Some(O::RedirectionGuard)),
+        (v(6, 7, 0), Some(O::WizardBevelsHidden)),
+        // `shUnusedPadding = 56`: pads the set to eight bytes so 32- and
+        // 64-bit compilers agree on its size.
+        (v(6, 7, 0), None),
+    ];
+    ladder
+        .iter()
+        .filter_map(|&(present, slot)| present.then_some(slot))
+        .collect()
 }
 
-/// 5.5.0..5.5.7 flag table. Same as `OPTIONS_V5_5_7` minus the
-/// final `ForceCloseApplications` slot (added at 5.5.7).
-const OPTIONS_V5_5_0: &[Option<HeaderOption>] = &[
-    Some(HeaderOption::DisableStartupPrompt),
-    Some(HeaderOption::CreateAppDir),
-    Some(HeaderOption::AllowNoIcons),
-    Some(HeaderOption::AlwaysRestart),
-    Some(HeaderOption::AlwaysUsePersonalGroup),
-    Some(HeaderOption::WindowVisible),
-    Some(HeaderOption::WindowShowCaption),
-    Some(HeaderOption::WindowResizable),
-    Some(HeaderOption::WindowStartMaximized),
-    Some(HeaderOption::EnableDirDoesntExistWarning),
-    Some(HeaderOption::Password),
-    Some(HeaderOption::AllowRootDirectory),
-    Some(HeaderOption::DisableFinishedPage),
-    None, // ChangesAssociations (flag-only pre-5.6.1)
-    Some(HeaderOption::UsePreviousAppDir),
-    Some(HeaderOption::BackColorHorizontal),
-    Some(HeaderOption::UsePreviousGroup),
-    Some(HeaderOption::UpdateUninstallLogAppName),
-    Some(HeaderOption::UsePreviousSetupType),
-    Some(HeaderOption::DisableReadyMemo),
-    Some(HeaderOption::AlwaysShowComponentsList),
-    Some(HeaderOption::FlatComponentsList),
-    Some(HeaderOption::ShowComponentSizes),
-    Some(HeaderOption::UsePreviousTasks),
-    Some(HeaderOption::DisableReadyPage),
-    Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    Some(HeaderOption::AllowUNCPath),
-    Some(HeaderOption::UserInfoPage),
-    Some(HeaderOption::UsePreviousUserInfo),
-    Some(HeaderOption::UninstallRestartComputer),
-    Some(HeaderOption::RestartIfNeededByRun),
-    Some(HeaderOption::ShowTasksTreeLines),
-    Some(HeaderOption::AllowCancelDuringInstall),
-    Some(HeaderOption::WizardImageStretch),
-    Some(HeaderOption::AppendDefaultDirName),
-    Some(HeaderOption::AppendDefaultGroupName),
-    Some(HeaderOption::EncryptionUsed),
-    None, // ChangesEnvironment (flag-only pre-5.6.1)
-    None, // ShowUndisplayableLanguages (ANSI-only)
-    Some(HeaderOption::SetupLogging),
-    Some(HeaderOption::SignedUninstaller),
-    Some(HeaderOption::UsePreviousLanguage),
-    Some(HeaderOption::DisableWelcomePage),
-    Some(HeaderOption::CloseApplications),
-    Some(HeaderOption::RestartApplications),
-    Some(HeaderOption::AllowNetworkDrive),
-];
-
-/// 5.5.7..6.0.0 ANSI flag bit table. Ordering follows innoextract
-/// `setup/header.cpp:569-733` (`header::load_flags`) - every
-/// `flagreader.add(...)` call that's gated on a version range
-/// covering 5.5.7 contributes one bit slot in declaration order.
-const OPTIONS_V5_5_7: &[Option<HeaderOption>] = &[
-    Some(HeaderOption::DisableStartupPrompt),
-    Some(HeaderOption::CreateAppDir),
-    Some(HeaderOption::AllowNoIcons),
-    Some(HeaderOption::AlwaysRestart),
-    Some(HeaderOption::AlwaysUsePersonalGroup),
-    Some(HeaderOption::WindowVisible),
-    Some(HeaderOption::WindowShowCaption),
-    Some(HeaderOption::WindowResizable),
-    Some(HeaderOption::WindowStartMaximized),
-    Some(HeaderOption::EnableDirDoesntExistWarning),
-    Some(HeaderOption::Password),
-    Some(HeaderOption::AllowRootDirectory),
-    Some(HeaderOption::DisableFinishedPage),
-    None, // ChangesAssociations (flag-only pre-5.6.1; not in HeaderOption union)
-    Some(HeaderOption::UsePreviousAppDir),
-    Some(HeaderOption::BackColorHorizontal),
-    Some(HeaderOption::UsePreviousGroup),
-    Some(HeaderOption::UpdateUninstallLogAppName),
-    Some(HeaderOption::UsePreviousSetupType),
-    Some(HeaderOption::DisableReadyMemo),
-    Some(HeaderOption::AlwaysShowComponentsList),
-    Some(HeaderOption::FlatComponentsList),
-    Some(HeaderOption::ShowComponentSizes),
-    Some(HeaderOption::UsePreviousTasks),
-    Some(HeaderOption::DisableReadyPage),
-    Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    Some(HeaderOption::AllowUNCPath),
-    Some(HeaderOption::UserInfoPage),
-    Some(HeaderOption::UsePreviousUserInfo),
-    Some(HeaderOption::UninstallRestartComputer),
-    Some(HeaderOption::RestartIfNeededByRun),
-    Some(HeaderOption::ShowTasksTreeLines),
-    Some(HeaderOption::AllowCancelDuringInstall),
-    Some(HeaderOption::WizardImageStretch),
-    Some(HeaderOption::AppendDefaultDirName),
-    Some(HeaderOption::AppendDefaultGroupName),
-    Some(HeaderOption::EncryptionUsed),
-    None, // ChangesEnvironment (flag-only pre-5.6.1; not in HeaderOption union)
-    None, // ShowUndisplayableLanguages (ANSI-only; absent on Unicode but
-    // bits 0..38 are stable, so callers reading Password / EncryptionUsed
-    // are unaffected by this slot's identity)
-    Some(HeaderOption::SetupLogging),
-    Some(HeaderOption::SignedUninstaller),
-    Some(HeaderOption::UsePreviousLanguage),
-    Some(HeaderOption::DisableWelcomePage),
-    Some(HeaderOption::CloseApplications),
-    Some(HeaderOption::RestartApplications),
-    Some(HeaderOption::AllowNetworkDrive),
-    Some(HeaderOption::ForceCloseApplications),
-];
-
-const OPTIONS_V6_1: &[Option<HeaderOption>] = &[
-    Some(HeaderOption::DisableStartupPrompt),
-    Some(HeaderOption::CreateAppDir),
-    Some(HeaderOption::AllowNoIcons),
-    Some(HeaderOption::AlwaysRestart),
-    Some(HeaderOption::AlwaysUsePersonalGroup),
-    Some(HeaderOption::WindowVisible),
-    Some(HeaderOption::WindowShowCaption),
-    Some(HeaderOption::WindowResizable),
-    Some(HeaderOption::WindowStartMaximized),
-    Some(HeaderOption::EnableDirDoesntExistWarning),
-    Some(HeaderOption::Password),
-    Some(HeaderOption::AllowRootDirectory),
-    Some(HeaderOption::DisableFinishedPage),
-    Some(HeaderOption::UsePreviousAppDir),
-    Some(HeaderOption::BackColorHorizontal),
-    Some(HeaderOption::UsePreviousGroup),
-    Some(HeaderOption::UpdateUninstallLogAppName),
-    Some(HeaderOption::UsePreviousSetupType),
-    Some(HeaderOption::DisableReadyMemo),
-    Some(HeaderOption::AlwaysShowComponentsList),
-    Some(HeaderOption::FlatComponentsList),
-    Some(HeaderOption::ShowComponentSizes),
-    Some(HeaderOption::UsePreviousTasks),
-    Some(HeaderOption::DisableReadyPage),
-    Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    Some(HeaderOption::AllowUNCPath),
-    Some(HeaderOption::UserInfoPage),
-    Some(HeaderOption::UsePreviousUserInfo),
-    Some(HeaderOption::UninstallRestartComputer),
-    Some(HeaderOption::RestartIfNeededByRun),
-    Some(HeaderOption::ShowTasksTreeLines),
-    Some(HeaderOption::AllowCancelDuringInstall),
-    Some(HeaderOption::WizardImageStretch),
-    Some(HeaderOption::AppendDefaultDirName),
-    Some(HeaderOption::AppendDefaultGroupName),
-    Some(HeaderOption::EncryptionUsed),
-    Some(HeaderOption::SetupLogging),
-    Some(HeaderOption::SignedUninstaller),
-    Some(HeaderOption::UsePreviousLanguage),
-    Some(HeaderOption::DisableWelcomePage),
-    Some(HeaderOption::CloseApplications),
-    Some(HeaderOption::RestartApplications),
-    Some(HeaderOption::AllowNetworkDrive),
-    Some(HeaderOption::ForceCloseApplications),
-    Some(HeaderOption::AppNameHasConsts),
-    Some(HeaderOption::UsePreviousPrivileges),
-    Some(HeaderOption::WizardResizable),
-];
-
-/// 6.3.0..6.4.0 - same shape as `OPTIONS_V6_1` plus `UninstallLogging`
-/// at slot 48 (innoextract `header.cpp:729-731`). 49 bits → 7 bytes
-/// on wire.
-const OPTIONS_V6_3: &[Option<HeaderOption>] = &[
-    Some(HeaderOption::DisableStartupPrompt),
-    Some(HeaderOption::CreateAppDir),
-    Some(HeaderOption::AllowNoIcons),
-    Some(HeaderOption::AlwaysRestart),
-    Some(HeaderOption::AlwaysUsePersonalGroup),
-    Some(HeaderOption::WindowVisible),
-    Some(HeaderOption::WindowShowCaption),
-    Some(HeaderOption::WindowResizable),
-    Some(HeaderOption::WindowStartMaximized),
-    Some(HeaderOption::EnableDirDoesntExistWarning),
-    Some(HeaderOption::Password),
-    Some(HeaderOption::AllowRootDirectory),
-    Some(HeaderOption::DisableFinishedPage),
-    Some(HeaderOption::UsePreviousAppDir),
-    Some(HeaderOption::BackColorHorizontal),
-    Some(HeaderOption::UsePreviousGroup),
-    Some(HeaderOption::UpdateUninstallLogAppName),
-    Some(HeaderOption::UsePreviousSetupType),
-    Some(HeaderOption::DisableReadyMemo),
-    Some(HeaderOption::AlwaysShowComponentsList),
-    Some(HeaderOption::FlatComponentsList),
-    Some(HeaderOption::ShowComponentSizes),
-    Some(HeaderOption::UsePreviousTasks),
-    Some(HeaderOption::DisableReadyPage),
-    Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    Some(HeaderOption::AllowUNCPath),
-    Some(HeaderOption::UserInfoPage),
-    Some(HeaderOption::UsePreviousUserInfo),
-    Some(HeaderOption::UninstallRestartComputer),
-    Some(HeaderOption::RestartIfNeededByRun),
-    Some(HeaderOption::ShowTasksTreeLines),
-    Some(HeaderOption::AllowCancelDuringInstall),
-    Some(HeaderOption::WizardImageStretch),
-    Some(HeaderOption::AppendDefaultDirName),
-    Some(HeaderOption::AppendDefaultGroupName),
-    Some(HeaderOption::EncryptionUsed),
-    Some(HeaderOption::SetupLogging),
-    Some(HeaderOption::SignedUninstaller),
-    Some(HeaderOption::UsePreviousLanguage),
-    Some(HeaderOption::DisableWelcomePage),
-    Some(HeaderOption::CloseApplications),
-    Some(HeaderOption::RestartApplications),
-    Some(HeaderOption::AllowNetworkDrive),
-    Some(HeaderOption::ForceCloseApplications),
-    Some(HeaderOption::AppNameHasConsts),
-    Some(HeaderOption::UsePreviousPrivileges),
-    Some(HeaderOption::WizardResizable),
-    Some(HeaderOption::UninstallLogging),
-];
-
-const OPTIONS_V6_4: &[Option<HeaderOption>] = &[
-    Some(HeaderOption::DisableStartupPrompt),
-    Some(HeaderOption::CreateAppDir),
-    Some(HeaderOption::AllowNoIcons),
-    Some(HeaderOption::AlwaysRestart),
-    Some(HeaderOption::AlwaysUsePersonalGroup),
-    Some(HeaderOption::EnableDirDoesntExistWarning),
-    Some(HeaderOption::Password),
-    Some(HeaderOption::AllowRootDirectory),
-    Some(HeaderOption::DisableFinishedPage),
-    Some(HeaderOption::UsePreviousAppDir),
-    Some(HeaderOption::UsePreviousGroup),
-    Some(HeaderOption::UpdateUninstallLogAppName),
-    Some(HeaderOption::UsePreviousSetupType),
-    Some(HeaderOption::DisableReadyMemo),
-    Some(HeaderOption::AlwaysShowComponentsList),
-    Some(HeaderOption::FlatComponentsList),
-    Some(HeaderOption::ShowComponentSizes),
-    Some(HeaderOption::UsePreviousTasks),
-    Some(HeaderOption::DisableReadyPage),
-    Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    Some(HeaderOption::AllowUNCPath),
-    Some(HeaderOption::UserInfoPage),
-    Some(HeaderOption::UsePreviousUserInfo),
-    Some(HeaderOption::UninstallRestartComputer),
-    Some(HeaderOption::RestartIfNeededByRun),
-    Some(HeaderOption::ShowTasksTreeLines),
-    Some(HeaderOption::AllowCancelDuringInstall),
-    Some(HeaderOption::WizardImageStretch),
-    Some(HeaderOption::AppendDefaultDirName),
-    Some(HeaderOption::AppendDefaultGroupName),
-    Some(HeaderOption::EncryptionUsed),
-    Some(HeaderOption::SetupLogging),
-    Some(HeaderOption::SignedUninstaller),
-    Some(HeaderOption::UsePreviousLanguage),
-    Some(HeaderOption::DisableWelcomePage),
-    Some(HeaderOption::CloseApplications),
-    Some(HeaderOption::RestartApplications),
-    Some(HeaderOption::AllowNetworkDrive),
-    Some(HeaderOption::ForceCloseApplications),
-    Some(HeaderOption::AppNameHasConsts),
-    Some(HeaderOption::UsePreviousPrivileges),
-    Some(HeaderOption::WizardResizable),
-    Some(HeaderOption::UninstallLogging),
-];
-
-const OPTIONS_V6_5: &[Option<HeaderOption>] = &[
-    Some(HeaderOption::DisableStartupPrompt),
-    Some(HeaderOption::CreateAppDir),
-    Some(HeaderOption::AllowNoIcons),
-    Some(HeaderOption::AlwaysRestart),
-    Some(HeaderOption::AlwaysUsePersonalGroup),
-    Some(HeaderOption::EnableDirDoesntExistWarning),
-    Some(HeaderOption::Password),
-    Some(HeaderOption::AllowRootDirectory),
-    Some(HeaderOption::DisableFinishedPage),
-    Some(HeaderOption::UsePreviousAppDir),
-    Some(HeaderOption::UsePreviousGroup),
-    Some(HeaderOption::UpdateUninstallLogAppName),
-    Some(HeaderOption::UsePreviousSetupType),
-    Some(HeaderOption::DisableReadyMemo),
-    Some(HeaderOption::AlwaysShowComponentsList),
-    Some(HeaderOption::FlatComponentsList),
-    Some(HeaderOption::ShowComponentSizes),
-    Some(HeaderOption::UsePreviousTasks),
-    Some(HeaderOption::DisableReadyPage),
-    Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    Some(HeaderOption::AllowUNCPath),
-    Some(HeaderOption::UserInfoPage),
-    Some(HeaderOption::UsePreviousUserInfo),
-    Some(HeaderOption::UninstallRestartComputer),
-    Some(HeaderOption::RestartIfNeededByRun),
-    Some(HeaderOption::ShowTasksTreeLines),
-    Some(HeaderOption::AllowCancelDuringInstall),
-    Some(HeaderOption::WizardImageStretch),
-    Some(HeaderOption::AppendDefaultDirName),
-    Some(HeaderOption::AppendDefaultGroupName),
-    Some(HeaderOption::SetupLogging),
-    Some(HeaderOption::SignedUninstaller),
-    Some(HeaderOption::UsePreviousLanguage),
-    Some(HeaderOption::DisableWelcomePage),
-    Some(HeaderOption::CloseApplications),
-    Some(HeaderOption::RestartApplications),
-    Some(HeaderOption::AllowNetworkDrive),
-    Some(HeaderOption::ForceCloseApplications),
-    Some(HeaderOption::AppNameHasConsts),
-    Some(HeaderOption::UsePreviousPrivileges),
-    Some(HeaderOption::WizardResizable),
-    Some(HeaderOption::UninstallLogging),
-];
-
-/// 6.7.0+ Options bit table. The 5 `shUsePrevious*` bits were
-/// removed (those directives became `String` fields instead);
-/// `shWizardResizable` was also removed (replaced by
-/// `shWizardModern`/`shWizardBorderStyled`/`shWizardKeepAspectRatio`/
-/// `shWizardBevelsHidden`). Bits 42..55 are reserved padding;
-/// bit 56 is `shUnusedPadding` itself. Total 57 bits = 8 bytes.
-const OPTIONS_V6_7: &[Option<HeaderOption>] = &[
-    /* 0  */ Some(HeaderOption::DisableStartupPrompt),
-    /* 1  */ Some(HeaderOption::CreateAppDir),
-    /* 2  */ Some(HeaderOption::AllowNoIcons),
-    /* 3  */ Some(HeaderOption::AlwaysRestart),
-    /* 4  */ Some(HeaderOption::AlwaysUsePersonalGroup),
-    /* 5  */ Some(HeaderOption::EnableDirDoesntExistWarning),
-    /* 6  */ Some(HeaderOption::Password),
-    /* 7  */ Some(HeaderOption::AllowRootDirectory),
-    /* 8  */ Some(HeaderOption::DisableFinishedPage),
-    /* 9  */ Some(HeaderOption::UpdateUninstallLogAppName),
-    /* 10 */ Some(HeaderOption::DisableReadyMemo),
-    /* 11 */ Some(HeaderOption::AlwaysShowComponentsList),
-    /* 12 */ Some(HeaderOption::FlatComponentsList),
-    /* 13 */ Some(HeaderOption::ShowComponentSizes),
-    /* 14 */ Some(HeaderOption::DisableReadyPage),
-    /* 15 */ Some(HeaderOption::AlwaysShowDirOnReadyPage),
-    /* 16 */ Some(HeaderOption::AlwaysShowGroupOnReadyPage),
-    /* 17 */ Some(HeaderOption::AllowUNCPath),
-    /* 18 */ Some(HeaderOption::UserInfoPage),
-    /* 19 */ Some(HeaderOption::UninstallRestartComputer),
-    /* 20 */ Some(HeaderOption::RestartIfNeededByRun),
-    /* 21 */ Some(HeaderOption::ShowTasksTreeLines),
-    /* 22 */ Some(HeaderOption::AllowCancelDuringInstall),
-    /* 23 */ Some(HeaderOption::WizardImageStretch),
-    /* 24 */ Some(HeaderOption::AppendDefaultDirName),
-    /* 25 */ Some(HeaderOption::AppendDefaultGroupName),
-    /* 26 */ Some(HeaderOption::SetupLogging),
-    /* 27 */ Some(HeaderOption::SignedUninstaller),
-    /* 28 */ Some(HeaderOption::UsePreviousLanguage),
-    /* 29 */ Some(HeaderOption::DisableWelcomePage),
-    /* 30 */ Some(HeaderOption::CloseApplications),
-    /* 31 */ Some(HeaderOption::RestartApplications),
-    /* 32 */ Some(HeaderOption::AllowNetworkDrive),
-    /* 33 */ Some(HeaderOption::ForceCloseApplications),
-    /* 34 */ Some(HeaderOption::AppNameHasConsts),
-    /* 35 */ Some(HeaderOption::UsePreviousPrivileges),
-    /* 36 */ Some(HeaderOption::UninstallLogging),
-    /* 37..41: shWizardModern, shWizardBorderStyled,
-    shWizardKeepAspectRatio, shRedirectionGuard, shWizardBevelsHidden */
-    None,
-    None,
-    None,
-    None,
-    None,
-    /* 42..56: reserved padding (and shUnusedPadding) */
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-];
+#[cfg(test)]
+mod upstream;
 
 #[cfg(test)]
 mod tests {

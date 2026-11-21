@@ -7,7 +7,8 @@ use std::{fmt, io};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// The byte slice is not a recognizable PE executable.
+    /// The byte slice is not an `MZ` executable: neither a PE nor the NE
+    /// of a 16-bit (1.2.x) installer.
     NotPe,
     /// Parsing the PE container failed (malformed headers, bad sections,
     /// etc.). Distinct from [`Error::NotPe`]: the bytes look like a PE
@@ -16,8 +17,9 @@ pub enum Error {
         /// goblin's diagnostic, captured as a string.
         reason: String,
     },
-    /// The PE overlay does not contain a recognizable Inno Setup loader
-    /// table (`SetupLdr`) or setup header signature.
+    /// The executable has no setup loader offset table: neither the
+    /// pre-5.1.5 pointer at `0x30` nor the 5.1.5+ table's magic was found.
+    /// The usual answer for a PE that is not an Inno Setup installer.
     NotInnoSetup,
     /// A structural field (offset, length) points outside the input
     /// buffer.
@@ -38,14 +40,16 @@ pub enum Error {
         /// The 12-byte magic that was actually read.
         magic: [u8; 12],
     },
-    /// The data version string at the start of the setup header was
-    /// recognized as Inno Setup but is not yet supported by this crate.
+    /// setup-0 does not begin with a SetupID marker this crate reads: not
+    /// the stock or ISX `... Setup Data (x.y.z)` form, nor the 1.2.10
+    /// legacy form.
     UnsupportedVersion {
         /// The raw `Inno Setup Setup Data (X.Y.Z)` marker as read from
         /// the installer (up to 64 bytes, may include trailing nulls).
         marker: [u8; 64],
     },
-    /// A CRC32 / Adler32 / table-CRC validation failed.
+    /// A stored CRC-32 did not match the bytes it covers (the offset
+    /// table, or a setup-0 block or sub-chunk).
     BadChecksum {
         /// What was being validated (e.g. `"SetupLdr offset table"`).
         what: &'static str,
@@ -61,58 +65,83 @@ pub enum Error {
         /// Underlying I/O error from the decompressor.
         source: io::Error,
     },
-    /// A UTF-16LE string field contained an invalid surrogate pair or
-    /// odd byte count.
+    /// A UTF-16LE string has an odd byte length or an unpaired surrogate.
     InvalidUtf16 {
         /// Which field failed to decode.
         what: &'static str,
     },
-    /// The `FileEntry` has no associated file-location slot
-    /// (`location_index == u32::MAX`). Used by the embedded
-    /// uninstaller stub which doesn't carry payload bytes.
+    /// The file has no data in the installer (its `location_index` is
+    /// `u32::MAX`): the uninstaller, which Setup writes from its own
+    /// program (see [`crate::InnoInstaller::extract_uninstaller`]), or an
+    /// external or downloaded file. `extract_uninstaller` also returns it
+    /// when the installer has no uninstaller entry.
     NoLocation,
-    /// The chunk is encrypted (`ChunkEncrypted` flag set on the
-    /// `DataEntry`) and no decryption key is available - typically
-    /// because the caller didn't supply a password.
+    /// The file's chunk is encrypted and the installer was opened without
+    /// its password (see [`crate::InnoInstaller::from_bytes_with_passwords`]).
     Encrypted,
-    /// The installer is encrypted but the candidate-password list
-    /// passed to [`crate::InnoInstaller::from_bytes_with_passwords`]
-    /// was empty.
+    /// The installer has a password (it is encrypted, or Setup asks for
+    /// one) but the candidate-password list passed to
+    /// [`crate::InnoInstaller::from_bytes_with_passwords`] was empty.
     PasswordRequired,
-    /// The installer is encrypted and none of the supplied
+    /// The installer has a password and none of the supplied
     /// candidate passwords matched the on-disk verifier.
     WrongPassword,
-    /// The chunk references an external slice file (`setup-1.bin`,
-    /// `setup-2.bin`, …) rather than embedded bytes within the
-    /// installer EXE. External slices are not yet supported.
+    /// The file's chunk is in a slice file beside the installer
+    /// (`setup-1.bin`, ..., `DiskSpanning=yes`) that was not supplied: see
+    /// [`crate::InnoInstaller::with_slices`].
     ExternalSlice,
-    /// The chunk spans multiple slice files
-    /// (`first_slice != last_slice`).
+    /// A chunk is longer than the slice files it names hold: its bytes run
+    /// past the end of `last`.
     MultiSliceChunk {
         /// First slice index covered by the chunk.
         first: u32,
         /// Last slice index covered by the chunk.
         last: u32,
     },
+    /// A slice file supplied through [`crate::InnoInstaller::with_slices`]
+    /// is not one: its ID is not the one the installer's release writes, or
+    /// its stated size is not its length.
+    BadSlice {
+        /// The slice's index, 0-based.
+        index: u32,
+        /// What is wrong.
+        reason: &'static str,
+    },
     /// The chunk header magic (`zlb\x1a`) was missing or malformed.
     BadChunkMagic {
         /// The 4 bytes actually read.
         got: [u8; 4],
     },
-    /// The chunk's compression method byte was outside the recognized
-    /// set or the per-version dispatch table.
+    /// A compressed chunk needs the header's `CompressMethod`, and its
+    /// byte is not one the version defines.
     UnsupportedCompression {
-        /// Raw method byte / enum discriminant.
+        /// The `CompressMethod` byte as stored.
         method: u8,
     },
-    /// The decompressor produced a different number of output bytes
-    /// than the sum of `original_size` across files in the chunk.
+    /// A chunk decompressed to fewer bytes than a file in it needs: the
+    /// file's data entry ends past the chunk.
     ChunkSizeMismatch {
-        /// Total uncompressed bytes expected from the file-location
-        /// table.
+        /// Where the file ends in the chunk (`ChunkSubOffset` plus
+        /// `OriginalSize`).
         expected: u64,
-        /// Bytes actually produced by the decompressor.
+        /// The chunk's decompressed size.
         actual: u64,
+    },
+    /// A decompressed setup-0 block holds bytes past the last thing Setup
+    /// reads from it: the records were read with the wrong layout.
+    TrailingData {
+        /// Which block.
+        what: &'static str,
+        /// How many bytes were left unread.
+        len: usize,
+    },
+    /// Something would decompress past the limit the crate sets for it
+    /// (a setup-0 block past 256 MiB), the mark of a decompression bomb.
+    TooLarge {
+        /// What.
+        what: &'static str,
+        /// The limit, in bytes.
+        limit: u64,
     },
     /// A file's post-extraction checksum did not match the value
     /// recorded in its `DataEntry`.
@@ -175,17 +204,16 @@ impl fmt::Display for Error {
             Self::NoLocation => f.write_str("FileEntry has no file-location slot"),
             Self::Encrypted => f.write_str("chunk is encrypted and no decryption key is available"),
             Self::PasswordRequired => {
-                f.write_str("installer is encrypted but no candidate passwords were supplied")
+                f.write_str("installer has a password but no candidate passwords were supplied")
             }
             Self::WrongPassword => {
                 f.write_str("no candidate password matched the installer's verifier")
             }
-            Self::ExternalSlice => {
-                f.write_str("chunk lives in an external slice file (not supported)")
-            }
+            Self::ExternalSlice => f.write_str("chunk lives in a slice file that was not supplied"),
             Self::MultiSliceChunk { first, last } => {
-                write!(f, "chunk spans slices {first}..={last}")
+                write!(f, "chunk runs past the end of slices {first}..={last}")
             }
+            Self::BadSlice { index, reason } => write!(f, "slice {index}: {reason}"),
             Self::BadChunkMagic { got } => {
                 write!(f, "bad chunk magic: expected `zlb\\x1a`, got {got:02x?}")
             }
@@ -195,8 +223,14 @@ impl fmt::Display for Error {
             Self::PascalScript(e) => write!(f, "PascalScript: {e}"),
             Self::ChunkSizeMismatch { expected, actual } => write!(
                 f,
-                "chunk size mismatch: expected {expected} uncompressed bytes, got {actual}"
+                "chunk too short: a file ends at byte {expected}, the chunk has {actual}"
             ),
+            Self::TrailingData { what, len } => {
+                write!(f, "{len} bytes left unread at the end of the {what}")
+            }
+            Self::TooLarge { what, limit } => {
+                write!(f, "{what} would exceed the {limit}-byte limit")
+            }
             Self::ChecksumMismatch {
                 algorithm,
                 expected,

@@ -25,10 +25,7 @@ use crate::{error::Error, util::read::Reader, version::Version};
 /// - [`Error::Truncated`] / [`Error::Overflow`] on out-of-bounds.
 /// - [`Error::InvalidUtf16`] if the byte count is odd or the units
 ///   form an unpaired surrogate.
-pub(crate) fn read_utf16_string(
-    reader: &mut Reader<'_>,
-    what: &'static str,
-) -> Result<String, Error> {
+pub fn read_utf16_string(reader: &mut Reader<'_>, what: &'static str) -> Result<String, Error> {
     let len_bytes = reader.u32_le(what)? as usize;
     if len_bytes == 0 {
         return Ok(String::new());
@@ -51,10 +48,7 @@ pub(crate) fn read_utf16_string(
 /// # Errors
 ///
 /// - [`Error::Truncated`] / [`Error::Overflow`] on out-of-bounds.
-pub(crate) fn read_ansi_bytes(
-    reader: &mut Reader<'_>,
-    what: &'static str,
-) -> Result<Vec<u8>, Error> {
+pub fn read_ansi_bytes(reader: &mut Reader<'_>, what: &'static str) -> Result<Vec<u8>, Error> {
     let len = reader.u32_le(what)? as usize;
     let bytes = reader.take(len, what)?;
     Ok(bytes.to_vec())
@@ -74,7 +68,7 @@ pub(crate) fn read_ansi_bytes(
 ///
 /// Same as [`read_utf16_string`] for the Unicode path; the ANSI path
 /// only fails on truncation.
-pub(crate) fn read_setup_string(
+pub fn read_setup_string(
     reader: &mut Reader<'_>,
     version: &Version,
     what: &'static str,
@@ -95,7 +89,7 @@ pub(crate) fn read_setup_string(
 /// yet stores all strings as UTF-16LE. Inno Setup has been
 /// Unicode-by-default since 5.6 - we treat that as the rule and
 /// the marker `(u)` as an informational hint.
-pub(crate) fn is_unicode_for_version(version: &Version) -> bool {
+pub fn is_unicode_for_version(version: &Version) -> bool {
     if version.is_unicode() {
         return true;
     }
@@ -115,7 +109,7 @@ pub(crate) fn is_unicode_for_version(version: &Version) -> bool {
 /// Windows-1252 is a superset of ASCII; every byte maps to a
 /// well-defined Unicode code point. The mapping below is straight
 /// from the Unicode Consortium's `WIN1252.TXT`.
-pub(crate) fn decode_windows_1252(bytes: &[u8]) -> String {
+pub fn decode_windows_1252(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
     for &b in bytes {
         out.push(byte_to_char_1252(b));

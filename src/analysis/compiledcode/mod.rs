@@ -1,8 +1,8 @@
 //! Inno-side wrapper for the embedded `[Code]` PascalScript blob.
 //!
 //! The structural parser lives in the standalone
-//! [`pascalscript`] crate (sibling repo at `../pascalscript/`) -
-//! fully host-agnostic, since RemObjects PascalScript III is
+//! [`pascalscript`] crate - fully host-agnostic, since RemObjects
+//! PascalScript III is
 //! used by many Delphi applications beyond Inno Setup. This
 //! module re-exports the parser's [`Container`] type for
 //! analyst convenience and adds one Inno-specific helper:

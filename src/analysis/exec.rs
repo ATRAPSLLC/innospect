@@ -20,6 +20,11 @@ pub enum ExecPhase {
     Uninstall,
 }
 
+stable_name_enum!(ExecPhase, {
+    Self::Install => "install",
+    Self::Uninstall => "uninstall",
+});
+
 /// A single command-execution directive, sourced from either
 /// `[Run]` or `[UninstallRun]`.
 ///
@@ -79,7 +84,11 @@ pub struct ExecIter<'a> {
 }
 
 impl<'a> ExecIter<'a> {
-    pub(crate) fn new(install: &'a [RunEntry], uninstall: &'a [RunEntry]) -> Self {
+    /// Walks `install` (`[Run]`) and then `uninstall` (`[UninstallRun]`),
+    /// as [`InnoInstaller::exec_commands`](crate::InnoInstaller::exec_commands)
+    /// does over an installer's own entries.
+    #[must_use]
+    pub fn new(install: &'a [RunEntry], uninstall: &'a [RunEntry]) -> Self {
         Self {
             install: install.iter(),
             uninstall: uninstall.iter(),

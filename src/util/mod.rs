@@ -1,5 +1,6 @@
 //! Internal utilities shared by parser modules.
 
-pub(crate) mod checksum;
-pub(crate) mod encoding;
-pub(crate) mod read;
+pub mod checksum;
+pub mod encoding;
+pub mod flags;
+pub mod read;

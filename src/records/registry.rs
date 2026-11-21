@@ -1,26 +1,15 @@
-//! `TSetupRegistryEntry` - `[Registry]` directive entry.
+//! `TSetupRegistryEntry`: one `[Registry]` entry, a key or value Setup
+//! creates, changes or deletes, and what the uninstaller does with it.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupRegistryEntry = packed record
-//!     SubKey: AnsiString;
-//!     ValueName: AnsiString;
-//!     ValueData: AnsiString;             // binary, not encoded
-//!     [ItemConditions]
-//!     Permissions: AnsiString;           // 4.0.11..4.1.0 only
-//!     [WindowsVersionRange]
-//!     RootKey: HKEY;                     // u32 (with high-bit mask)
-//!     PermissionsEntry: SmallInt;        // since 4.1.0
-//!     Typ: TSetupRegistryValueType;      // u8 enum
-//!     Options: TSetupRegistryOptions;
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/registry.cpp`. Conditions
-//! and version range are split (the legacy permissions blob from
-//! 4.0.11..4.1.0 sits between), so we read [`ItemConditions`] and
-//! [`WindowsVersionRange`] separately rather than via `ItemBase`.
+//! On disk (`SECompressedBlockWrite`): `Subkey`, `ValueName`, `ValueData`,
+//! the condition strings, from 4.0.11 to 4.1.0 an inline `Permissions`
+//! string, the Windows version range, `RootKey`, from 4.1.0
+//! `PermissionsEntry`, `Typ`, from SetupID 7.0.0.3 `Bitness`, and the
+//! `Options` set. The conditions and the version range are split by that
+//! permissions string, so they are read apart rather than as an
+//! [`crate::records::item::ItemBase`]. Reader reference: innoextract
+//! `setup/registry.cpp`; every layout is checked against upstream's own
+//! declarations by the `crate::upstream` tests.
 
 use std::{borrow::Cow, collections::HashSet};
 
@@ -31,16 +20,19 @@ use crate::{
         windows::{Bitness, WindowsVersionRange},
     },
     util::{
-        encoding::{read_ansi_bytes, read_setup_string},
-        read::Reader,
+        encoding::{
+            decode_windows_1252, is_unicode_for_version, read_ansi_bytes, read_setup_string,
+        },
+        read::{FromReader, Reader},
     },
     version::Version,
 };
 
-/// Windows registry hive (`RootKey` after high-bit mask).
+/// The root key an entry is under (`Root:`), from `RootKey`. The
+/// predefined handles are `0x80000000` plus the index this enum lists them
+/// in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum RegistryHive {
     /// `HKEY_CLASSES_ROOT`.
     ClassesRoot,
@@ -56,8 +48,13 @@ pub enum RegistryHive {
     CurrentConfig,
     /// `HKEY_DYN_DATA` (Win9x legacy).
     DynData,
-    /// Unknown / not-set numeric hive value.
+    /// A value that is no predefined handle, holding it with the high bit
+    /// cleared.
     Unknown(u32),
+    /// `HKA` (`HKEY_AUTO`, stored as 1; 6.0.0+): `HKEY_LOCAL_MACHINE` when
+    /// Setup runs in administrative install mode, `HKEY_CURRENT_USER`
+    /// otherwise.
+    Auto,
 }
 
 stable_name_enum!(RegistryHive, {
@@ -69,19 +66,26 @@ stable_name_enum!(RegistryHive, {
     Self::CurrentConfig => "current_config",
     Self::DynData => "dyn_data",
     Self::Unknown(_) => "unknown",
+    Self::Auto => "auto",
 });
 
-/// Registry value type (`TSetupRegistryValueType`).
+/// `ValueType:` (`Typ`): the type of the value an entry writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum RegistryValueType {
+    /// `rtNone` (`none`): create the key only, no value.
     None,
+    /// `rtString` (`string`): `REG_SZ`.
     String,
+    /// `rtExpandString` (`expandsz`): `REG_EXPAND_SZ`.
     ExpandString,
+    /// `rtDWord` (`dword`): `REG_DWORD`.
     DWord,
+    /// `rtBinary` (`binary`): `REG_BINARY`.
     Binary,
+    /// `rtMultiString` (`multisz`): `REG_MULTI_SZ`.
     MultiString,
+    /// `rtQWord` (`qword`): `REG_QWORD` (5.2.5+).
     QWord,
 }
 
@@ -95,22 +99,64 @@ stable_name_enum!(RegistryValueType, {
     Self::QWord => "qword",
 });
 
-/// `TSetupRegistryOptions` flag bits.
+/// `ValueData:` decoded per [`RegistryEntry::value_type`] and the version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RegistryData {
+    /// `none`: no value, only the key.
+    None,
+    /// `string` / `expandsz`: the text, constants unexpanded.
+    String(String),
+    /// `multisz`: the text, lines separated by the `{break}` constant,
+    /// which Setup turns into NULs; other constants unexpanded.
+    MultiString(String),
+    /// `dword` / `qword` known when compiling. Before 4.1.4 a `dword` is
+    /// stored as its four little-endian bytes; from 4.1.4 both are stored
+    /// as text, `$` and hexadecimal digits.
+    Number(u64),
+    /// `dword` / `qword` given as a constant, such as `{reg:...}`, which
+    /// Setup resolves at install time (4.1.4+).
+    NumberExpression(String),
+    /// `binary`, or a value whose type this crate does not know: the bytes.
+    Binary(Vec<u8>),
+}
+
+/// `TSetupRegistryEntry.Options`: the entry's `Flags:`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum RegistryFlag {
+    /// `roCreateValueIfDoesntExist` (`createvalueifdoesntexist`): write the
+    /// value only if none of that name exists.
     CreateValueIfDoesntExist,
+    /// `roUninsDeleteValue` (`uninsdeletevalue`): delete the value at
+    /// uninstall.
     UninsDeleteValue,
+    /// `roUninsClearValue` (`uninsclearvalue`): set the value to an empty
+    /// `REG_SZ` at uninstall.
     UninsClearValue,
+    /// `roUninsDeleteEntireKey` (`uninsdeletekey`): delete the key with all
+    /// its values and subkeys at uninstall.
     UninsDeleteEntireKey,
+    /// `roUninsDeleteEntireKeyIfEmpty` (`uninsdeletekeyifempty`): delete
+    /// the key at uninstall if nothing is left in it.
     UninsDeleteEntireKeyIfEmpty,
+    /// `roPreserveStringType` (`preservestringtype`): keep an existing
+    /// value's `REG_SZ` / `REG_EXPAND_SZ` type.
     PreserveStringType,
+    /// `roDeleteKey` (`deletekey`): delete the key first, then write.
     DeleteKey,
+    /// `roDeleteValue` (`deletevalue`): delete the value first, then write.
     DeleteValue,
+    /// `roNoError` (`noerror`): no error message if writing fails.
     NoError,
+    /// `roDontCreateKey` (`dontcreatekey`): do nothing if the key does not
+    /// already exist.
     DontCreateKey,
+    /// `ro32Bit` (`HKLM32` etc.): the 32-bit registry view (5.1.0 to
+    /// SetupID 7.0.0.2; then [`RegistryEntry::bitness`]).
     Bits32,
+    /// `ro64Bit` (`HKLM64` etc.): the 64-bit view (5.1.0 to 7.0.0.2; then
+    /// [`RegistryEntry::bitness`]).
     Bits64,
 }
 
@@ -129,80 +175,148 @@ stable_flag_enum!(RegistryFlag, {
     Bits64 => "bits64",
 });
 
-/// Parsed `TSetupRegistryEntry`.
+/// One `[Registry]` entry (`TSetupRegistryEntry`). Strings may contain
+/// constants such as `{app}`, unexpanded.
 #[derive(Clone, Debug)]
 pub struct RegistryEntry {
-    /// `Subkey:` directive.
+    /// `Subkey:`: the key's path under [`Self::hive`].
     pub subkey: String,
-    /// `ValueName:` directive (empty = the `(Default)` value).
+    /// `ValueName:`: the value to write; empty is the key's default value.
+    /// Always empty in a 16-bit installer (1.2.x), which has no value names
+    /// and writes the default value.
     pub value_name: String,
-    /// `ValueData:` raw bytes. Encoding depends on
-    /// [`Self::value_type`]: `String`/`ExpandString`/`MultiString`
-    /// values are UTF-16LE on Unicode builds; `DWord`/`QWord`/
-    /// `Binary` are raw bytes; `None` is empty.
+    /// `ValueData:` as stored: a string field, so UTF-16LE in Unicode
+    /// builds. A `binary` value is one byte per character (per UTF-16 unit
+    /// in Unicode builds), and a `dword` from 4.1.4 on is text. Decoded in
+    /// [`Self::data`].
     pub value: Vec<u8>,
-    /// `[ItemConditions]`.
+    /// `ValueData:` decoded.
+    pub data: RegistryData,
+    /// `Components:` .. `AfterInstall:`.
     pub conditions: ItemConditions,
-    /// Legacy 4.0.11..4.1.0 inline permissions blob (replaced by the
-    /// `[Permissions]` table at 4.1.0).
+    /// `Permissions:` as an inline array of `TGrantPermissionEntry` (4.0.11
+    /// to 4.1.0; later releases index [`crate::InnoInstaller::permissions`]
+    /// through [`Self::permission_index`]).
     pub legacy_permissions: Vec<u8>,
-    /// `[WindowsVersionRange]`.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
-    /// Decoded hive.
+    /// `Root:`, decoded.
     pub hive: RegistryHive,
-    /// Raw `RootKey` u32 (after stripping the `0x80000000` "auto"
-    /// flag bit).
+    /// `RootKey` with the predefined-handle bit (`0x80000000`) cleared:
+    /// 0 is `HKCR`, 1 `HKCU`, 2 `HKLM`, and so on. `HKA` is 1 as stored,
+    /// so it also reads 1 here; tell them apart by [`Self::hive`] or
+    /// [`Self::root_key_raw`].
     pub hive_raw: u32,
-    /// Index into [`crate::InnoInstaller::permissions`]; `-1` =
-    /// no entry. 4.1.0+.
+    /// `RootKey` as stored. A 16-bit installer (1.2.x) stores none: it only
+    /// writes under `HKEY_CLASSES_ROOT` (1.2.16 `INSTALL.PAS`), so this is
+    /// that key's value, `0x80000000`.
+    pub root_key_raw: u32,
+    /// `PermissionsEntry`: index into [`crate::InnoInstaller::permissions`]
+    /// of the ACL `Permissions:` grants; -1 for none (4.1.0+; -1 before).
     pub permission_index: i16,
-    /// Decoded value type.
+    /// `ValueType:`, decoded; `None` for a value this crate does not know.
     pub value_type: Option<RegistryValueType>,
-    /// Raw `Typ` byte.
+    /// `Typ` as stored.
     pub value_type_raw: u8,
-    /// `Bitness` enum (6.7.0+; replaces `Bits32`/`Bits64` flag bits).
+    /// `Bitness`: the registry view (SetupID 7.0.0.3+, replacing
+    /// [`RegistryFlag::Bits32`] / [`RegistryFlag::Bits64`]). `None` before,
+    /// or for a value this crate does not know.
     pub bitness: Option<Bitness>,
-    /// Raw bitness byte (or 0 when absent).
+    /// `Bitness` as stored; 0 when the version has no such byte.
     pub bitness_raw: u8,
-    /// Decoded options.
+    /// `Options`, decoded.
     pub flags: HashSet<RegistryFlag>,
-    /// Raw `Options` bytes.
+    /// `Options` as stored: the set's bytes, whose size grows with the
+    /// number of flags the version defines.
     pub options_raw: Vec<u8>,
 }
 
 impl RegistryEntry {
-    /// Returns the raw registry value bytes.
+    /// `ValueData:` as stored; see [`Self::value`].
     #[must_use]
     pub fn value_bytes(&self) -> &[u8] {
         &self.value
     }
 
-    /// Renders the registry value using the decoded registry value type.
+    /// [`Self::data`] as text: a string as written, a known number in
+    /// decimal, a number expression as written, binary data in lower-case
+    /// hex, and nothing for `none`.
     #[must_use]
     pub fn value_text(&self) -> Cow<'_, str> {
-        match self.value_type {
-            Some(RegistryValueType::DWord) => Cow::Owned(format_le_u32(&self.value)),
-            Some(RegistryValueType::QWord) => Cow::Owned(format_le_u64(&self.value)),
-            Some(RegistryValueType::String | RegistryValueType::ExpandString) => {
-                Cow::Owned(decode_utf16le_lossy(&self.value))
-            }
-            Some(RegistryValueType::MultiString) => {
-                Cow::Owned(decode_utf16le_lossy(&self.value).replace('\0', "\\0"))
-            }
-            Some(RegistryValueType::Binary) | Some(RegistryValueType::None) | None => {
-                Cow::Owned(format_hex(&self.value))
-            }
+        match &self.data {
+            RegistryData::None => Cow::Borrowed(""),
+            RegistryData::String(s)
+            | RegistryData::MultiString(s)
+            | RegistryData::NumberExpression(s) => Cow::Borrowed(s.as_str()),
+            RegistryData::Number(n) => Cow::Owned(n.to_string()),
+            RegistryData::Binary(b) => Cow::Owned(format_hex(b)),
         }
     }
+}
 
+/// Decodes `ValueData` per its type and the version's encoding.
+fn decode_data(
+    value: &[u8],
+    value_type: Option<RegistryValueType>,
+    version: &Version,
+) -> RegistryData {
+    let unicode = is_unicode_for_version(version);
+    let text = |b: &[u8]| {
+        if unicode {
+            decode_utf16le_lossy(b)
+        } else {
+            decode_windows_1252(b)
+        }
+    };
+    match value_type {
+        Some(RegistryValueType::None) => RegistryData::None,
+        Some(RegistryValueType::String | RegistryValueType::ExpandString) => {
+            RegistryData::String(text(value))
+        }
+        Some(RegistryValueType::MultiString) => RegistryData::MultiString(text(value)),
+        Some(RegistryValueType::DWord) if !version.at_least(4, 1, 4) => match value {
+            [a, b, c, d] => RegistryData::Number(u64::from(u32::from_le_bytes([*a, *b, *c, *d]))),
+            _ => RegistryData::Binary(value.to_vec()),
+        },
+        Some(RegistryValueType::DWord | RegistryValueType::QWord) => {
+            let t = text(value);
+            let trimmed = t.trim();
+            let number = match trimmed.strip_prefix('$') {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => trimmed.parse::<u64>().ok(),
+            };
+            number.map_or(
+                RegistryData::NumberExpression(t.clone()),
+                RegistryData::Number,
+            )
+        }
+        Some(RegistryValueType::Binary) if unicode => {
+            // One byte per UTF-16 unit; a unit above 0xFF is not something
+            // the compiler writes, so the data is kept as stored.
+            let units = value.as_chunks::<2>().0;
+            if value.len().is_multiple_of(2) && units.iter().all(|[_, hi]| *hi == 0) {
+                RegistryData::Binary(units.iter().map(|[lo, _]| *lo).collect())
+            } else {
+                RegistryData::Binary(value.to_vec())
+            }
+        }
+        Some(RegistryValueType::Binary) | None => RegistryData::Binary(value.to_vec()),
+    }
+}
+
+impl FromReader for RegistryEntry {
     /// Reads one `TSetupRegistryEntry`.
     ///
     /// # Errors
     ///
     /// String / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let subkey = read_setup_string(reader, version, "Registry.Subkey")?;
-        let value_name = read_setup_string(reader, version, "Registry.ValueName")?;
+        let value_name = if version.is_16bit() {
+            String::new()
+        } else {
+            read_setup_string(reader, version, "Registry.ValueName")?
+        };
         let value = read_ansi_bytes(reader, "Registry.ValueData")?;
         let conditions = ItemConditions::read(reader, version)?;
 
@@ -214,11 +328,20 @@ impl RegistryEntry {
 
         let winver = WindowsVersionRange::read(reader, version)?;
 
-        let raw_root = reader.u32_le("Registry.RootKey")?;
-        // Inno sets the high bit when the root key was determined at
-        // compile time vs runtime; mask it off for the canonical hive.
-        let hive_raw = raw_root & !0x8000_0000;
-        let hive = RegistryHive::from_raw(hive_raw);
+        const HKEY_CLASSES_ROOT: u32 = 0x8000_0000;
+        let root_key_raw = if version.is_16bit() {
+            HKEY_CLASSES_ROOT
+        } else {
+            reader.u32_le("Registry.RootKey")?
+        };
+        // Predefined handles are `0x80000000 + n`; `HKA` (6.0.0+) is
+        // `HKEY_AUTO`, the plain value 1 (`Shared.SetupTypes.pas`).
+        let hive_raw = root_key_raw & !0x8000_0000;
+        let hive = if root_key_raw == 1 && version.at_least(6, 0, 0) {
+            RegistryHive::Auto
+        } else {
+            RegistryHive::from_raw(hive_raw)
+        };
 
         let permission_index = if version.at_least(4, 1, 0) {
             reader
@@ -230,6 +353,7 @@ impl RegistryEntry {
 
         let value_type_raw = reader.u8("Registry.Typ")?;
         let value_type = decode_value_type(value_type_raw, version);
+        let data = decode_data(&value, value_type, version);
 
         // SetupBinVersion 7.0.0.3 (issrc commit `3553e3b7`) adds a
         // `Bitness` byte between `Typ` and `Options`. 7.0.0.0..7.0.0.2
@@ -243,18 +367,20 @@ impl RegistryEntry {
         };
 
         let table = registry_flag_table(version);
-        let raw = reader.set_bytes(table.len(), true, "Registry.Options")?;
-        let flags = super::decode_packed_flags(&raw, &table);
+        let raw = reader.set_bytes(table.len(), version, "Registry.Options")?;
+        let flags = crate::util::flags::decode_packed_flags(&raw, &table);
 
         Ok(Self {
             subkey,
             value_name,
             value,
+            data,
             conditions,
             legacy_permissions,
             winver,
             hive,
             hive_raw,
+            root_key_raw,
             permission_index,
             value_type,
             value_type_raw,
@@ -320,26 +446,6 @@ fn decode_value_type(b: u8, version: &Version) -> Option<RegistryValueType> {
     }
 }
 
-fn format_le_u32(bytes: &[u8]) -> String {
-    let mut buf = [0_u8; 4];
-    for (idx, byte) in bytes.iter().take(4).enumerate() {
-        if let Some(slot) = buf.get_mut(idx) {
-            *slot = *byte;
-        }
-    }
-    u32::from_le_bytes(buf).to_string()
-}
-
-fn format_le_u64(bytes: &[u8]) -> String {
-    let mut buf = [0_u8; 8];
-    for (idx, byte) in bytes.iter().take(8).enumerate() {
-        if let Some(slot) = buf.get_mut(idx) {
-            *slot = *byte;
-        }
-    }
-    u64::from_le_bytes(buf).to_string()
-}
-
 fn decode_utf16le_lossy(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
         .as_chunks::<2>()
@@ -365,13 +471,17 @@ fn format_hex(bytes: &[u8]) -> String {
 }
 
 fn registry_flag_table(version: &Version) -> Vec<RegistryFlag> {
-    let mut t = vec![
-        RegistryFlag::CreateValueIfDoesntExist,
-        RegistryFlag::UninsDeleteValue,
+    let mut t = Vec::new();
+    // A 16-bit installer has no value names to test or delete.
+    if !version.is_16bit() {
+        t.push(RegistryFlag::CreateValueIfDoesntExist);
+        t.push(RegistryFlag::UninsDeleteValue);
+    }
+    t.extend([
         RegistryFlag::UninsClearValue,
         RegistryFlag::UninsDeleteEntireKey,
         RegistryFlag::UninsDeleteEntireKeyIfEmpty,
-    ];
+    ]);
     if version.at_least(1, 2, 6) {
         t.push(RegistryFlag::PreserveStringType);
     }
@@ -393,4 +503,73 @@ fn registry_flag_table(version: &Version) -> Vec<RegistryFlag> {
         t.push(RegistryFlag::Bits64);
     }
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::upstream::version;
+
+    fn utf16(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn dword_is_four_bytes_before_4_1_4_and_text_after() {
+        let dword = Some(RegistryValueType::DWord);
+        let old = version("4.1.3", false);
+        assert_eq!(
+            decode_data(&123u32.to_le_bytes(), dword, &old),
+            RegistryData::Number(123)
+        );
+        let ansi = version("5.0.4", false);
+        assert_eq!(decode_data(b"$7B", dword, &ansi), RegistryData::Number(123));
+        let unicode = version("7.1.1", true);
+        assert_eq!(
+            decode_data(&utf16("$7B"), dword, &unicode),
+            RegistryData::Number(123)
+        );
+        assert_eq!(
+            decode_data(&utf16("{reg:HKLM\\X,Y}"), dword, &unicode),
+            RegistryData::NumberExpression("{reg:HKLM\\X,Y}".into())
+        );
+        let qword = Some(RegistryValueType::QWord);
+        assert_eq!(
+            decode_data(&utf16("$FFFFFFFFFF"), qword, &unicode),
+            RegistryData::Number(0xFF_FFFF_FFFF)
+        );
+    }
+
+    #[test]
+    fn strings_follow_the_build_and_binary_is_one_byte_per_char() {
+        let unicode = version("7.1.1", true);
+        let ansi = version("5.5.7", false);
+        let string = Some(RegistryValueType::String);
+        assert_eq!(
+            decode_data(&utf16("{app}"), string, &unicode),
+            RegistryData::String("{app}".into())
+        );
+        assert_eq!(
+            decode_data(b"caf\xe9", string, &ansi),
+            RegistryData::String("café".into())
+        );
+        let multi = Some(RegistryValueType::MultiString);
+        assert_eq!(
+            decode_data(&utf16("a{break}b"), multi, &unicode),
+            RegistryData::MultiString("a{break}b".into())
+        );
+        let binary = Some(RegistryValueType::Binary);
+        assert_eq!(
+            decode_data(&[0x01, 0x00, 0xAB, 0x00], binary, &unicode),
+            RegistryData::Binary(vec![0x01, 0xAB])
+        );
+        assert_eq!(
+            decode_data(&[0x01, 0xAB], binary, &ansi),
+            RegistryData::Binary(vec![0x01, 0xAB])
+        );
+        assert_eq!(
+            decode_data(b"", Some(RegistryValueType::None), &unicode),
+            RegistryData::None
+        );
+    }
 }

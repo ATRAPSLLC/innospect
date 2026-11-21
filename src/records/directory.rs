@@ -1,23 +1,14 @@
-//! `TSetupDirEntry` - `[Dirs]` directive entry.
+//! `TSetupDirEntry`: one `[Dirs]` entry, a directory Setup creates beyond
+//! those its files need, and what the uninstaller does with it.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupDirEntry = packed record
-//!     DirName: AnsiString;
-//!     [ItemConditions]
-//!     Permissions: AnsiString;          // only 4.0.11..4.1.0 (legacy)
-//!     Attribs: Cardinal;                 // since 2.0.11
-//!     [WindowsVersionRange]
-//!     PermissionsEntry: SmallInt;        // since 4.1.0
-//!     Options: TSetupDirOptions;         // 3 or 5 bits
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/directory.cpp`. Note:
-//! `directory` interposes `permissions` + `attributes` between the
-//! shared conditions section and the version range, so we read the
-//! two halves of `ItemBase` separately.
+//! On disk (`SECompressedBlockWrite`): `DirName`, the condition strings,
+//! from 4.0.11 to 4.1.0 an inline `Permissions` string, from 2.0.11
+//! `Attribs`, the Windows version range, from 4.1.0 `PermissionsEntry`,
+//! and the `Options` set. The conditions and the version range are split by
+//! the fields between them, so they are read apart rather than as an
+//! [`crate::records::item::ItemBase`]. Reader reference: innoextract
+//! `setup/directory.cpp`; every layout is checked against upstream's own
+//! declarations by the `crate::upstream` tests.
 
 use std::collections::HashSet;
 
@@ -26,20 +17,29 @@ use crate::{
     records::{item::ItemConditions, windows::WindowsVersionRange},
     util::{
         encoding::{read_ansi_bytes, read_setup_string},
-        read::Reader,
+        read::{FromReader, Reader},
     },
     version::Version,
 };
 
-/// `TSetupDirOptions` flag bits.
+/// `TSetupDirEntry.Options`: the entry's `Flags:`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum DirectoryFlag {
+    /// `doUninsNeverUninstall` (`uninsneveruninstall`): the uninstaller
+    /// leaves the directory.
     NeverUninstall,
+    /// `doDeleteAfterInstall` (`deleteafterinstall`): create it, then delete
+    /// it when Setup finishes if it is empty.
     DeleteAfterInstall,
+    /// `doUninsAlwaysUninstall` (`uninsalwaysuninstall`): the uninstaller
+    /// removes it if empty even when it existed before installing.
     AlwaysUninstall,
+    /// `doSetNTFSCompression` (`setntfscompression`): turn NTFS compression
+    /// on for the directory (5.2.0+).
     SetNtfsCompression,
+    /// `doUnsetNTFSCompression` (`unsetntfscompression`): turn it off
+    /// (5.2.0+).
     UnsetNtfsCompression,
 }
 
@@ -51,38 +51,40 @@ stable_flag_enum!(DirectoryFlag, {
     UnsetNtfsCompression => "unset_ntfs_compression",
 });
 
-/// Parsed `TSetupDirEntry`.
+/// One `[Dirs]` entry (`TSetupDirEntry`).
 #[derive(Clone, Debug)]
 pub struct DirectoryEntry {
-    /// `Name:` directive - directory path with Inno constants.
+    /// `Name:` (Pascal `DirName`): the directory, constants such as `{app}`
+    /// unexpanded.
     pub name: String,
-    /// `[ItemConditions]`.
+    /// `Components:` .. `AfterInstall:`.
     pub conditions: ItemConditions,
-    /// `Permissions:` legacy 4.0.11..4.1.0 inline blob (the
-    /// permissions were inlined here for that narrow version range
-    /// before the `[Permissions]` table was introduced). Empty
-    /// outside that range.
+    /// `Permissions:` as an inline array of `TGrantPermissionEntry` (4.0.11
+    /// to 4.1.0; later releases index [`crate::InnoInstaller::permissions`]
+    /// through [`Self::permission_index`]). Empty otherwise.
     pub legacy_permissions: Vec<u8>,
-    /// `Attribs:` directive - Win32 file-attribute flags.
+    /// `Attribs:`: Windows file attributes Setup sets on the directory
+    /// (`FILE_ATTRIBUTE_READONLY` 0x1, `_HIDDEN` 0x2, `_SYSTEM` 0x4,
+    /// `_NOT_CONTENT_INDEXED` 0x2000); 0 for none (2.0.11+).
     pub attributes: u32,
-    /// `[WindowsVersionRange]`.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
-    /// Index into [`crate::InnoInstaller::permissions`]; `-1` =
-    /// no entry. 4.1.0+.
+    /// `PermissionsEntry`: index into [`crate::InnoInstaller::permissions`]
+    /// of the ACL `Permissions:` grants; -1 for none (4.1.0+; -1 before).
     pub permission_index: i16,
-    /// Decoded options.
+    /// `Options`, decoded.
     pub flags: HashSet<DirectoryFlag>,
-    /// Raw `Options` byte.
+    /// `Options` as stored.
     pub options_raw: u8,
 }
 
-impl DirectoryEntry {
+impl FromReader for DirectoryEntry {
     /// Reads one `TSetupDirEntry`.
     ///
     /// # Errors
     ///
     /// String / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let name = read_setup_string(reader, version, "Dir.Name")?;
         let conditions = ItemConditions::read(reader, version)?;
 
@@ -109,7 +111,7 @@ impl DirectoryEntry {
         };
 
         let bit_count = if version.at_least(5, 2, 0) { 5 } else { 3 };
-        let raw = reader.set_bytes(bit_count, true, "Dir.Options")?;
+        let raw = reader.set_bytes(bit_count, version, "Dir.Options")?;
         let options_raw = raw.first().copied().unwrap_or(0);
         let flags = decode_directory_flags(options_raw, version);
 
@@ -136,5 +138,5 @@ fn decode_directory_flags(raw: u8, version: &Version) -> HashSet<DirectoryFlag> 
         table.push(DirectoryFlag::SetNtfsCompression);
         table.push(DirectoryFlag::UnsetNtfsCompression);
     }
-    super::decode_packed_flags(&[raw], &table)
+    crate::util::flags::decode_packed_flags(&[raw], &table)
 }

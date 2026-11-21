@@ -1,38 +1,43 @@
-//! `TSetupIniEntry` - `[INI]` directive entry.
+//! `TSetupIniEntry`: one `[INI]` entry, a key Setup writes to an `.ini`
+//! file, and what the uninstaller removes.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupIniEntry = packed record
-//!     IniFile, Section, Key, Value: AnsiString;
-//!     [ItemConditions]
-//!     [WindowsVersionRange]
-//!     Options: TSetupIniOptions;     // 5 bits → 1 byte
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/ini.cpp`. innoextract
-//! defaults `inifile` to `{windows}/WIN.INI` when empty - we surface
-//! the field as-stored and let the caller apply that fallback.
+//! On disk (`SECompressedBlockWrite`): `Filename`, `Section`, `Entry`,
+//! `Value`, the condition strings, the Windows version range and the
+//! `Options` set. Reader reference: innoextract `setup/ini.cpp`; every
+//! layout is checked against upstream's own declarations by the
+//! `crate::upstream` tests.
 
 use std::collections::HashSet;
 
 use crate::{
     error::Error,
     records::item::ItemBase,
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// `TSetupIniOptions` flag bits.
+/// `TSetupIniEntry.Options`: the entry's `Flags:`, and whether it has a
+/// value.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum IniFlag {
+    /// `ioCreateKeyIfDoesntExist` (`createkeyifdoesntexist`): write the key
+    /// only if it does not already exist.
     CreateKeyIfDoesntExist,
+    /// `ioUninsDeleteEntry` (`uninsdeleteentry`): delete the key at
+    /// uninstall.
     UninsDeleteEntry,
+    /// `ioUninsDeleteEntireSection` (`uninsdeletesection`): delete the whole
+    /// section at uninstall.
     UninsDeleteEntireSection,
+    /// `ioUninsDeleteSectionIfEmpty` (`uninsdeletesectionifempty`): delete
+    /// the section at uninstall if no keys are left in it.
     UninsDeleteSectionIfEmpty,
+    /// `ioHasValue`: the entry gave `String:`, so Setup writes the key; an
+    /// entry without one only takes part at uninstall.
     HasValue,
 }
 
@@ -44,39 +49,42 @@ stable_flag_enum!(IniFlag, {
     HasValue => "has_value",
 });
 
-/// Parsed `TSetupIniEntry`.
+/// One `[INI]` entry (`TSetupIniEntry`). Strings may contain constants
+/// such as `{app}`, unexpanded.
 #[derive(Clone, Debug)]
 pub struct IniEntry {
-    /// `Filename:` directive - path of the `.ini` file.
+    /// `Filename:`: the `.ini` file. Without a path it is in the Windows
+    /// directory; empty means `win.ini` there.
     pub inifile: String,
-    /// `Section:` directive.
+    /// `Section:`: the section to write in.
     pub section: String,
-    /// `Key:` directive.
+    /// `Key:` (Pascal `Entry`): the key to set; empty means none.
     pub key: String,
-    /// `String:` directive - value to write (when [`IniFlag::HasValue`]
-    /// is set).
+    /// `String:` (Pascal `Value`): the value to set, with
+    /// [`IniFlag::HasValue`].
     pub value: String,
-    /// Shared conditions + Windows version range.
+    /// `Components:` .. `AfterInstall:` and `MinVersion:` /
+    /// `OnlyBelowVersion:`.
     pub item: ItemBase,
-    /// Decoded options.
+    /// `Options`, decoded.
     pub flags: HashSet<IniFlag>,
-    /// Raw `Options` byte.
+    /// `Options` as stored.
     pub options_raw: u8,
 }
 
-impl IniEntry {
+impl FromReader for IniEntry {
     /// Reads one `TSetupIniEntry`.
     ///
     /// # Errors
     ///
     /// String / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let inifile = read_setup_string(reader, version, "Ini.Filename")?;
         let section = read_setup_string(reader, version, "Ini.Section")?;
         let key = read_setup_string(reader, version, "Ini.Key")?;
         let value = read_setup_string(reader, version, "Ini.Value")?;
         let item = ItemBase::read(reader, version)?;
-        let raw = reader.set_bytes(5, true, "Ini.Options")?;
+        let raw = reader.set_bytes(5, version, "Ini.Options")?;
         let options_raw = raw.first().copied().unwrap_or(0);
         let flags = decode_ini_flags(options_raw);
         Ok(Self {
@@ -99,5 +107,5 @@ fn decode_ini_flags(raw: u8) -> HashSet<IniFlag> {
         IniFlag::UninsDeleteSectionIfEmpty,
         IniFlag::HasValue,
     ];
-    super::decode_packed_flags(&[raw], &table)
+    crate::util::flags::decode_packed_flags(&[raw], &table)
 }

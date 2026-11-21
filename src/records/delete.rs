@@ -1,35 +1,37 @@
-//! `TSetupDeleteEntry` - `[InstallDelete]` / `[UninstallDelete]`
-//! entry. The same struct is reused for both directives.
+//! `TSetupDeleteEntry`: one `[InstallDelete]` or `[UninstallDelete]`
+//! entry, files or directories Setup deletes before installing
+//! (`[InstallDelete]`) or the uninstaller deletes besides what it installed
+//! (`[UninstallDelete]`). Both sections share the record; the installer
+//! keeps them in separate lists ([`crate::InnoInstaller::install_deletes`],
+//! [`crate::InnoInstaller::uninstall_deletes`]).
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupDeleteEntry = packed record
-//!     Name: AnsiString;
-//!     [ItemConditions]
-//!     [WindowsVersionRange]
-//!     DeleteType: TSetupDeleteType;   // u8 enum
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/delete.cpp`.
+//! On disk (`SECompressedBlockWrite`): `Name`, the condition strings, the
+//! Windows version range and `DeleteType`. Reader reference: innoextract
+//! `setup/delete.cpp`; every layout is checked against upstream's own
+//! declarations by the `crate::upstream` tests.
 
 use crate::{
     error::Error,
     records::item::ItemBase,
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// `TSetupDeleteType` - what the entry deletes.
+/// `Type:` (`TSetupDeleteType`): what [`DeleteEntry::name`] matches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeleteTargetType {
-    /// `dtFiles` - file glob (no recursion).
+    /// `dtFiles` (`files`): files matching the name, which may contain
+    /// wildcards.
     Files,
-    /// `dtFilesAndSubdirs` - file glob + recurse subdirectories.
+    /// `dtFilesAndSubdirs` (`filesandordirs`): files and directories
+    /// matching it, directories with everything in them.
     FilesAndSubdirs,
-    /// `dtDirIfEmpty` - directory, only if empty.
+    /// `dtDirIfEmpty` (`dirifempty`): the named directory, no wildcards,
+    /// only if it is empty.
     DirIfEmpty,
 }
 
@@ -39,27 +41,28 @@ stable_name_enum!(DeleteTargetType, {
     Self::DirIfEmpty => "dir_if_empty",
 });
 
-/// Parsed `TSetupDeleteEntry`.
+/// One `[InstallDelete]` / `[UninstallDelete]` entry (`TSetupDeleteEntry`).
 #[derive(Clone, Debug)]
 pub struct DeleteEntry {
-    /// `Name:` directive - file path / glob to delete (with Inno
-    /// constants like `{app}` unresolved).
+    /// `Name:`: what to delete, a path that may contain wildcards (see
+    /// [`Self::target_type`]) and constants such as `{app}`, unexpanded.
     pub name: String,
-    /// Shared conditions + Windows version range.
+    /// `Components:` .. `AfterInstall:` and `MinVersion:` /
+    /// `OnlyBelowVersion:`.
     pub item: ItemBase,
-    /// Decoded `DeleteType`.
+    /// `Type:`, decoded; `None` for a value this crate does not know.
     pub target_type: Option<DeleteTargetType>,
-    /// Raw target-type byte.
+    /// `Type` as stored.
     pub target_type_raw: u8,
 }
 
-impl DeleteEntry {
+impl FromReader for DeleteEntry {
     /// Reads one `TSetupDeleteEntry`.
     ///
     /// # Errors
     ///
     /// String / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let name = read_setup_string(reader, version, "Delete.Name")?;
         let item = ItemBase::read(reader, version)?;
         let target_type_raw = reader.u8("Delete.Type")?;

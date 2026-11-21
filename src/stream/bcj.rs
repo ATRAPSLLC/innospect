@@ -7,7 +7,7 @@
 //! compressibility. After decompression we apply the **inverse**
 //! filter to restore the original bytes.
 //!
-//! Reader reference: `research/src/stream/exefilter.hpp`. The
+//! Reader reference: innoextract `stream/exefilter.hpp`. The
 //! source contains two C++ classes:
 //! - `inno_exe_decoder_4108` for pre-5.2.0 installers.
 //! - `inno_exe_decoder_5200` for 5.2.0+; constructed with
@@ -39,8 +39,8 @@ impl Filter {
     /// Selects the filter variant for a given Inno Setup version.
     /// Maps directly to innoextract's
     /// `data.cpp:CallInstructionOptimized` dispatch
-    /// (`research/src/stream/data.cpp:218-226`).
-    pub(crate) fn for_version(version: &crate::version::Version) -> Self {
+    /// (innoextract `stream/data.cpp`).
+    pub fn for_version(version: &crate::version::Version) -> Self {
         if version.at_least(5, 3, 9) {
             Self::V5_3_9
         } else if version.at_least(5, 2, 0) {
@@ -60,7 +60,7 @@ impl Filter {
     /// signature is `Result` to satisfy the deny-set discipline
     /// (no `expect`, no slice indexing). Errors here would indicate
     /// an internal bug in the BCJ window logic.
-    pub(crate) fn apply(self, buf: &mut [u8]) -> Result<(), Error> {
+    pub fn apply(self, buf: &mut [u8]) -> Result<(), Error> {
         match self {
             Self::V4108 => apply_4108(buf),
             Self::V5200 => apply_5200(buf, false),

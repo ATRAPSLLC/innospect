@@ -1,14 +1,16 @@
-//! PE-overlay-locator pipeline.
+//! The setup loader's offset table: where in the installer executable
+//! setup-0, setup-1 and the Setup program are.
 //!
-//! Inno Setup payloads live inside a Windows PE executable. The
-//! [`pe`] module walks the PE container and locates the
-//! `SetupLdrOffsetTable` resource (id `11111`) for installers built
-//! with Inno Setup 5.1.5+, and the legacy file-offset locator at
-//! `0x30` for older installers. The [`offsettable`] module decodes
-//! the resulting bytes into a typed [`OffsetTable`].
+//! An installer is SetupLdr, a small Windows program, with the setup data
+//! appended. Before 5.1.5 SetupLdr finds its `TSetupLdrOffsetTable` through
+//! a pointer at file offset `0x30`; from 5.1.5 the table is the PE resource
+//! `11111`. This crate follows the pointer when it is there and otherwise
+//! scans for the table's 12-byte magic ([`pe::LocatorMode`]), then decodes
+//! it into an [`OffsetTable`].
 //!
-//! See `RESEARCH.md` §2 and `research-notes/02-loader-and-version.md`
-//! for the format reference.
+//! Upstream: `TSetupLdrOffsetTable` (issrc `Projects/Src/Shared.Struct.pas`)
+//! and the setup loader (`Projects/SetupLdr.dpr`); reader reference:
+//! innoextract `loader/offsets.cpp`.
 
 pub mod offsettable;
 pub mod pe;

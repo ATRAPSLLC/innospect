@@ -12,18 +12,18 @@
 /// Computed via a precomputed 256-entry table (built at compile time
 /// inside this crate) - fast enough for the offset-table and block
 /// header / sub-chunk checks without pulling in an extra dependency.
-pub(crate) fn crc32(data: &[u8]) -> u32 {
+pub fn crc32(data: &[u8]) -> u32 {
     crc32_finalize(crc32_update(crc32_init(), data))
 }
 
 /// Initial CRC32 state for streaming use.
-pub(crate) fn crc32_init() -> u32 {
+pub fn crc32_init() -> u32 {
     0xFFFF_FFFF
 }
 
 /// Folds `data` into a streaming CRC32 state. Returns the new
 /// pre-finalize state.
-pub(crate) fn crc32_update(mut state: u32, data: &[u8]) -> u32 {
+pub fn crc32_update(mut state: u32, data: &[u8]) -> u32 {
     for &byte in data {
         let idx = (state ^ u32::from(byte)) & 0xFF;
         let table_val = match TABLE.get(idx as usize) {
@@ -36,7 +36,7 @@ pub(crate) fn crc32_update(mut state: u32, data: &[u8]) -> u32 {
 }
 
 /// Finalizes a streaming CRC32 state.
-pub(crate) fn crc32_finalize(state: u32) -> u32 {
+pub fn crc32_finalize(state: u32) -> u32 {
     state ^ 0xFFFF_FFFF
 }
 

@@ -12,10 +12,6 @@
 //! [`crate::InnoInstaller::extract_to_vec`], and
 //! [`crate::InnoInstaller::extract_by_location`].
 
-pub(crate) mod bcj;
-pub(crate) mod checksum;
-pub(crate) mod chunk;
 pub mod file;
-pub(crate) mod slice;
 
 pub use file::FileReader;
