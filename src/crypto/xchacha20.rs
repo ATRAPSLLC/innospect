@@ -1,9 +1,8 @@
 //! XChaCha20 stream-cipher wrapper used by Inno Setup 6.4+ for
 //! chunk encryption (and 6.5+ `euFull` setup-0 encryption).
 //!
-//! Pascal source reference: `Components/ChaCha20.pas`. Audit doc:
-//! `research-notes/08-issrc-encryption.md` §B–§E. Per-chunk nonce
-//! derivation:
+//! Pascal source reference: `Components/ChaCha20.pas` and
+//! `Projects/Src/Shared.EncryptionFunc.pas`. Per-chunk nonce derivation:
 //!
 //! ```text
 //! nonce[0..7]  = BaseNonce[0..7]  XOR (chunk_start_offset as i64 LE)
@@ -21,15 +20,15 @@ use chacha20::{
 };
 
 /// XChaCha20 key (32 bytes).
-pub(crate) type Key = [u8; 32];
+pub type Key = [u8; 32];
 /// XChaCha20 nonce (24 bytes).
-pub(crate) type Nonce = [u8; 24];
+pub type Nonce = [u8; 24];
 
 /// Special crypt-context type per Pascal `TSpecialCryptContextType`
 /// (`Shared.EncryptionFunc.pas:18`). Used to derive
 /// `SpecialFirstSlice = -1 - typ_index`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SpecialContext {
+pub enum SpecialContext {
     /// Verifier - `SpecialFirstSlice = -1`.
     PasswordTest,
     /// `euFull` setup-0 first block - `SpecialFirstSlice = -2`.
@@ -40,7 +39,7 @@ pub(crate) enum SpecialContext {
 
 impl SpecialContext {
     /// Returns the `FirstSlice` (i32) the context resolves to.
-    pub(crate) fn first_slice(self) -> i32 {
+    pub fn first_slice(self) -> i32 {
         // SpecialFirstSlice = -1 - (Ord(Typ) - Ord(Low(Typ)))
         // PasswordTest=0 → -1, CompressedBlocks1=1 → -2,
         // CompressedBlocks2=2 → -3.
@@ -63,7 +62,7 @@ impl SpecialContext {
 /// Nonce.RandomXorStartOffset := Nonce.RandomXorStartOffset xor StartOffset;
 /// Nonce.RandomXorFirstSlice  := Nonce.RandomXorFirstSlice  xor FirstSlice;
 /// ```
-pub(crate) fn chunk_nonce(base: &Nonce, start_offset: u64, first_slice: i32) -> Nonce {
+pub fn chunk_nonce(base: &Nonce, start_offset: u64, first_slice: i32) -> Nonce {
     let mut out = *base;
 
     // Bytes 0..7: i64 LE XOR with `start_offset` (Inno treats as
@@ -96,13 +95,13 @@ pub(crate) fn chunk_nonce(base: &Nonce, start_offset: u64, first_slice: i32) -> 
 
 /// Convenience: derive the nonce for one of the three "special"
 /// contexts (verifier or `euFull` block).
-pub(crate) fn special_nonce(base: &Nonce, ctx: SpecialContext) -> Nonce {
+pub fn special_nonce(base: &Nonce, ctx: SpecialContext) -> Nonce {
     chunk_nonce(base, 0, ctx.first_slice())
 }
 
 /// Decrypts (or equivalently encrypts) `buf` in place under the
 /// given `(key, nonce)`. XChaCha20 is its own inverse.
-pub(crate) fn apply_keystream(key: &Key, nonce: &Nonce, buf: &mut [u8]) {
+pub fn apply_keystream(key: &Key, nonce: &Nonce, buf: &mut [u8]) {
     let mut cipher = XChaCha20::new(key.into(), nonce.into());
     cipher.apply_keystream(buf);
 }
@@ -112,7 +111,7 @@ pub(crate) fn apply_keystream(key: &Key, nonce: &Nonce, buf: &mut [u8]) {
 /// (`Shared.EncryptionFunc.pas:71-80`): encrypt 4 zero bytes under
 /// the `sccPasswordTest`-derived nonce; the cipher output is the
 /// verifier.
-pub(crate) fn password_test_verifier(key: &Key, base: &Nonce) -> u32 {
+pub fn password_test_verifier(key: &Key, base: &Nonce) -> u32 {
     let nonce = special_nonce(base, SpecialContext::PasswordTest);
     let mut buf = [0u8; 4];
     apply_keystream(key, &nonce, &mut buf);

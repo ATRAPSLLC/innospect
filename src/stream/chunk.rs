@@ -9,7 +9,7 @@
 //! [`chunk_bytes`] for a given chunk index does the decompression
 //! work, all subsequent calls return the cached `&[u8]` directly.
 //!
-//! Wire layout (`research/src/stream/chunk.cpp:159-185`):
+//! Wire layout (innoextract `stream/chunk.cpp`):
 //!
 //! ```text
 //! [ "zlb\x1a"          (4 bytes) ]   chunk magic
@@ -21,21 +21,17 @@
 //! [`EncryptionContext`] is supplied, [`decompress_chunk`] surfaces
 //! [`Error::Encrypted`].
 
-use std::{
-    io::{self, Read as _},
-    sync::Arc,
-};
+use std::{io, sync::Arc};
 
 use bzip2::read::BzDecoder;
 use flate2::read::ZlibDecoder;
 
 use crate::{
-    decompress::block::decompress_inno_lzma1,
     error::Error,
-    extract::slice::SliceReader,
-    header::CompressMethod,
-    installer::EncryptionMode,
+    header::{CompressMethod, HeaderTail},
     records::dataentry::{DataEntry, DataFlag},
+    stream::block::{decompress_inno_lzma1, read_at_most},
+    stream::slice::SliceReader,
 };
 
 /// Encryption parameters threaded through chunk decompression.
@@ -43,18 +39,13 @@ use crate::{
 /// legacy (pre-6.4 ARC4) paths - they have different key
 /// derivation, different on-disk chunk layouts (legacy has an
 /// 8-byte per-chunk salt prefix), and obviously different ciphers.
-pub(crate) enum EncryptionContext<'a> {
+pub enum EncryptionContext<'a> {
     /// 6.4+ XChaCha20. `key` is PBKDF2-derived once per installer;
     /// per-chunk nonce comes from `base_nonce` XOR'd with the
     /// chunk's `(start_offset, first_slice)`.
     Modern {
         key: &'a [u8; 32],
         base_nonce: &'a [u8; 24],
-        // Carried for parity with the upstream wire layout; the
-        // chunk-decrypt path keys + nonces alone, mode is consumed
-        // by the setup-0 decompression branch in the installer.
-        #[allow(dead_code)]
-        mode: EncryptionMode,
     },
     /// Pre-6.4 ARC4. The per-chunk RC4 key is derived from
     /// `salt8 || password_bytes` with SHA-1 (5.3.9..6.4) or
@@ -62,7 +53,7 @@ pub(crate) enum EncryptionContext<'a> {
     /// body, just after the `zlb\x1a` magic. `password_bytes` is
     /// UTF-16LE for Unicode builds and Windows-1252 for ANSI
     /// builds - innoextract picks the codepage in `info::get_key`
-    /// (`research/src/setup/info.cpp:322-352`).
+    /// (innoextract `setup/info.cpp`).
     Legacy {
         password: &'a str,
         /// `true` for 5.3.9..6.4 (SHA-1 keying), `false` for
@@ -76,9 +67,31 @@ pub(crate) enum EncryptionContext<'a> {
 
 const CHUNK_MAGIC: [u8; 4] = *b"zlb\x1a";
 
+/// The method `data`'s chunk is compressed with, as Setup chooses it
+/// (`TFileExtractor`; innoextract `setup/data.cpp`): stored without
+/// [`DataFlag::ChunkCompressed`] (a `nocompression` file, 4.2.5+), bzip2
+/// with the pre-4.0.1 [`DataFlag::BZipped`], else the header's
+/// `CompressMethod`.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedCompression`] when the chunk needs the header's
+/// method and its byte is one this crate does not know.
+pub fn chunk_method(data: &DataEntry, header: &HeaderTail) -> Result<CompressMethod, Error> {
+    if !data.flags.contains(&DataFlag::ChunkCompressed) {
+        return Ok(CompressMethod::Stored);
+    }
+    if data.flags.contains(&DataFlag::BZipped) {
+        return Ok(CompressMethod::Bzip2);
+    }
+    header.compress_method.ok_or(Error::UnsupportedCompression {
+        method: header.compress_method_raw,
+    })
+}
+
 /// Decompresses the bytes of a chunk identified by the data entry's
-/// `(first_slice, start_offset, chunk_compressed_size)` triple plus
-/// the installer's per-chunk compression method.
+/// `(first_slice, start_offset, chunk_compressed_size)` triple, with the
+/// method [`chunk_method`] picks from the entry's flags and `header`.
 ///
 /// When `encryption` is `Some` AND the data entry's
 /// [`DataFlag::ChunkEncrypted`] is set, the chunk body is
@@ -86,19 +99,19 @@ const CHUNK_MAGIC: [u8; 4] = *b"zlb\x1a";
 /// from `(base_nonce, data.start_offset, data.first_slice)` per the
 /// Pascal `InitCryptContext` algorithm.
 ///
+/// Decompresses no further than `needed` bytes: how far the furthest file
+/// in the chunk reaches (its `chunk_sub_offset` plus `original_size`),
+/// which is all Setup reads.
+///
 /// Caller is expected to wrap this in `OnceLock::get_or_init`.
-pub(crate) fn decompress_chunk(
+pub fn decompress_chunk(
     slice: &SliceReader<'_>,
     data: &DataEntry,
-    compression: CompressMethod,
+    header: &HeaderTail,
     encryption: Option<&EncryptionContext<'_>>,
+    needed: u64,
 ) -> Result<Arc<[u8]>, Error> {
-    if data.first_slice != data.last_slice {
-        return Err(Error::MultiSliceChunk {
-            first: data.first_slice,
-            last: data.last_slice,
-        });
-    }
+    let compression = chunk_method(data, header)?;
 
     // For encrypted chunks, an EncryptionContext is required.
     // Without one, surface `Error::Encrypted` so the caller can
@@ -129,7 +142,8 @@ pub(crate) fn decompress_chunk(
         .ok_or(Error::Overflow {
             what: "chunk total bytes",
         })?;
-    let region = slice.read_at(data.first_slice, data.start_offset, total)?;
+    let region = slice.read_at(data.first_slice, data.last_slice, data.start_offset, total)?;
+    let region: &[u8] = &region;
 
     let (magic, after_magic) = match region {
         [m0, m1, m2, m3, rest @ ..] => ([*m0, *m1, *m2, *m3], rest),
@@ -155,7 +169,7 @@ pub(crate) fn decompress_chunk(
             } => {
                 let nonce = crate::crypto::xchacha20::chunk_nonce(
                     base_nonce,
-                    u64::from(data.start_offset),
+                    data.start_offset,
                     i32::try_from(data.first_slice).unwrap_or(0),
                 );
                 let mut buf = after_magic.to_vec();
@@ -196,42 +210,21 @@ pub(crate) fn decompress_chunk(
         after_magic
     };
 
-    // Allocate `original_size`-sized output up front. We don't have
-    // an explicit decompressed size on the wire; the caller knows
-    // the sum-of-files-in-this-chunk (from data entries that share
-    // it) but doesn't pre-aggregate that - let the decompressor
-    // grow as needed.
-    let mut out = Vec::<u8>::new();
-
-    match compression {
-        CompressMethod::Stored => {
-            out.extend_from_slice(compressed);
-        }
-        CompressMethod::Zlib => {
-            // Inno's Zlib chunks use the raw deflate stream (no
-            // zlib wrapper). innoextract uses
-            // `boost::iostreams::zlib_decompressor` - we use
-            // flate2's `ZlibDecoder` first and fall back to
-            // `DeflateDecoder` if a sample later proves the wrapper
-            // is absent.
-            let mut dec = ZlibDecoder::new(compressed);
-            dec.read_to_end(&mut out).map_err(|e| Error::Decompress {
-                stream: "chunk Zlib",
-                source: e,
-            })?;
-        }
-        CompressMethod::Bzip2 => {
-            let mut dec = BzDecoder::new(compressed);
-            dec.read_to_end(&mut out).map_err(|e| Error::Decompress {
-                stream: "chunk BZip2",
-                source: e,
-            })?;
-        }
-        CompressMethod::Lzma1 => {
-            // Inno's LZMA1 wrap: 5-byte properties + raw LZMA1,
-            // the same framing as the setup-0 outer block.
-            out = decompress_inno_lzma1(compressed, "chunk LZMA1")?;
-        }
+    // Decompress only as far as the chunk's files reach (`needed`): that is
+    // all Setup reads, and a stream that claims more cannot make the
+    // parser allocate it.
+    let out = match compression {
+        CompressMethod::Stored => compressed
+            .get(..usize::try_from(needed).unwrap_or(usize::MAX))
+            .unwrap_or(compressed)
+            .to_vec(),
+        // A zlib stream, header and Adler-32 trailer included, as
+        // innoextract's `boost::iostreams::zlib_decompressor` reads it.
+        CompressMethod::Zlib => read_at_most(ZlibDecoder::new(compressed), needed, "chunk Zlib")?,
+        CompressMethod::Bzip2 => read_at_most(BzDecoder::new(compressed), needed, "chunk BZip2")?,
+        // Inno's LZMA1 wrap: 5-byte properties + raw LZMA1, the same
+        // framing as the setup-0 outer block.
+        CompressMethod::Lzma1 => decompress_inno_lzma1(compressed, "chunk LZMA1", needed)?,
         CompressMethod::Lzma2 => {
             // Inno's LZMA2 wrap: 1-byte dictionary-size property +
             // raw LZMA2 stream. lzma-rust2 treats the dictionary size
@@ -243,15 +236,13 @@ pub(crate) fn decompress_chunk(
                 });
             };
             let dict_size = lzma2_dict_size(*prop)?;
-            let mut reader = lzma_rust2::Lzma2Reader::new(stream, dict_size, None);
-            reader
-                .read_to_end(&mut out)
-                .map_err(|e| Error::Decompress {
-                    stream: "chunk LZMA2",
-                    source: e,
-                })?;
+            read_at_most(
+                lzma_rust2::Lzma2Reader::new(stream, dict_size, None),
+                needed,
+                "chunk LZMA2",
+            )?
         }
-    }
+    };
 
     Ok(Arc::<[u8]>::from(out))
 }
@@ -347,7 +338,7 @@ mod tests {
         //    inside a fake setup-1 region.
         let mut input_buf = vec![0u8; 0x100];
         let setup1_offset = input_buf.len() as u64;
-        let chunk_start_in_setup1 = 0x42_u32;
+        let chunk_start_in_setup1 = 0x42_u64;
         input_buf.resize(input_buf.len() + chunk_start_in_setup1 as usize, 0u8);
         input_buf.extend_from_slice(b"zlb\x1a");
         input_buf.extend_from_slice(&salt);
@@ -383,7 +374,112 @@ mod tests {
         };
 
         // 7. Decompress and check.
-        let bytes = decompress_chunk(&slice, &data, CompressMethod::Lzma1, Some(&ctx)).unwrap();
+        let header = HeaderTail {
+            compress_method: Some(CompressMethod::Lzma1),
+            ..HeaderTail::default()
+        };
+        let bytes = decompress_chunk(&slice, &data, &header, Some(&ctx), u64::MAX).unwrap();
         assert_eq!(bytes.as_ref(), plaintext.as_slice());
+    }
+
+    fn entry(flags: &[DataFlag], start_offset: u64, size: u64) -> DataEntry {
+        DataEntry {
+            first_slice: 0,
+            last_slice: 0,
+            start_offset,
+            chunk_sub_offset: 0,
+            original_size: size,
+            chunk_compressed_size: size,
+            checksum: DataChecksum::Sha256([0u8; 32]),
+            timestamp_seconds: 0,
+            timestamp_nanos: 0,
+            file_version: 0,
+            flags: flags.iter().copied().collect(),
+            flags_raw: vec![0],
+            sign_mode: crate::records::dataentry::SignMode::NoSetting,
+            sign_mode_raw: 0,
+        }
+    }
+
+    fn tail(method: Option<CompressMethod>, raw: u8) -> HeaderTail {
+        HeaderTail {
+            compress_method: method,
+            compress_method_raw: raw,
+            ..HeaderTail::default()
+        }
+    }
+
+    /// Setup picks the method per chunk: stored without `ChunkCompressed`,
+    /// bzip2 with `BZipped`, else the header's.
+    #[test]
+    fn chunk_method_follows_the_entry_flags() {
+        let lzma = tail(Some(CompressMethod::Lzma2), 4);
+        let method =
+            |flags: &[DataFlag], header: &HeaderTail| chunk_method(&entry(flags, 0, 0), header);
+        assert_eq!(method(&[], &lzma).unwrap(), CompressMethod::Stored);
+        assert_eq!(
+            method(&[DataFlag::ChunkCompressed], &lzma).unwrap(),
+            CompressMethod::Lzma2
+        );
+        let zlib = tail(Some(CompressMethod::Zlib), 0);
+        assert_eq!(
+            method(&[DataFlag::ChunkCompressed, DataFlag::BZipped], &zlib).unwrap(),
+            CompressMethod::Bzip2
+        );
+        let unknown = tail(None, 9);
+        assert!(matches!(
+            method(&[DataFlag::ChunkCompressed], &unknown),
+            Err(Error::UnsupportedCompression { method: 9 })
+        ));
+        // A stored chunk needs no method, so an unknown one does not matter.
+        assert_eq!(method(&[], &unknown).unwrap(), CompressMethod::Stored);
+    }
+
+    /// A `nocompression` file's chunk is its bytes as they are, even when
+    /// the installer compresses everything else.
+    #[test]
+    fn a_chunk_decompresses_only_as_far_as_its_files_reach() {
+        // 64 MiB of zeros, a few kilobytes of zlib: a bomb, unless the
+        // decompression stops where the chunk's files end.
+        use std::io::Write as _;
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![0u8; 1 << 20];
+        for _ in 0..64 {
+            encoder.write_all(&zeros).unwrap();
+        }
+        let body = encoder.finish().unwrap();
+        let mut input = vec![0u8; 0x40];
+        input.extend_from_slice(b"zlb\x1a");
+        input.extend_from_slice(&body);
+        let slice = SliceReader::embedded(&input, 0x40).unwrap();
+        let data = entry(&[DataFlag::ChunkCompressed], 0, body.len() as u64);
+        let bytes = decompress_chunk(
+            &slice,
+            &data,
+            &tail(Some(CompressMethod::Zlib), 1),
+            None,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(bytes.len(), 1000);
+    }
+
+    #[test]
+    fn uncompressed_chunk_is_read_as_stored() {
+        let body = b"stored as is";
+        let mut input = vec![0u8; 0x40];
+        input.extend_from_slice(b"zlb\x1a");
+        input.extend_from_slice(body);
+        let slice = SliceReader::embedded(&input, 0x40).unwrap();
+        let data = entry(&[], 0, body.len() as u64);
+        let bytes = decompress_chunk(
+            &slice,
+            &data,
+            &tail(Some(CompressMethod::Lzma1), 3),
+            None,
+            u64::MAX,
+        )
+        .unwrap();
+        assert_eq!(bytes.as_ref(), body);
     }
 }

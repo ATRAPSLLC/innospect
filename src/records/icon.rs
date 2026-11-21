@@ -1,48 +1,38 @@
-//! `TSetupIconEntry` - `[Icons]` directive entry (Start Menu /
-//! desktop shortcut).
+//! `TSetupIconEntry`: one `[Icons]` entry, a shortcut Setup creates in
+//! the Start menu, on the desktop or elsewhere.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupIconEntry = packed record
-//!     IconName, Filename, Parameters, WorkingDir, IconFilename,
-//!         Comment: AnsiString;
-//!     [ItemConditions]
-//!     AppUserModelID: AnsiString;        // since 5.3.5
-//!     AppUserModelToastActivatorCLSID: TGUID;  // since 6.1.0 (16 bytes)
-//!     [WindowsVersionRange]
-//!     IconIndex: Integer;
-//!     ShowCmd: Integer;        // since 1.3.24
-//!     CloseOnExit: TSetupCloseOnExit; // u8 enum, since 1.3.15
-//!     HotKey: Word;            // since 2.0.7
-//!     Options: TSetupIconOptions;
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/icon.cpp`. The conditions
-//! and version range are split by per-version `app_user_model_id` /
-//! CLSID fields, so we read [`ItemConditions`] and
-//! [`WindowsVersionRange`] separately rather than via `ItemBase`.
+//! On disk (`SECompressedBlockWrite`): the string fields (the six below,
+//! the condition strings, from 5.3.5 `AppUserModelID`), from 6.1.0 the
+//! 16-byte `AppUserModelToastActivatorCLSID`, the Windows version range,
+//! `IconIndex`, from 1.3.24 `ShowCmd`, from 1.3.15 `CloseOnExit`, from 2.0.7
+//! `HotKey`, and the `Options` set. The conditions and the version range
+//! are split by the fields between them, so they are read apart rather
+//! than as an [`crate::records::item::ItemBase`]. Reader reference:
+//! innoextract `setup/icon.cpp`; every layout is checked against
+//! upstream's own declarations by the `crate::upstream` tests.
 
 use std::collections::HashSet;
 
 use crate::{
     error::Error,
     records::{item::ItemConditions, windows::WindowsVersionRange},
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// `TSetupCloseOnExit` - wizard close-on-exit policy for the
-/// shortcut's launched process.
+/// `CloseOnExit` (`TSetupIconCloseOnExit`): the "Close on exit" property
+/// of a shortcut to an MS-DOS program (`.pif`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CloseOnExit {
-    /// `coNoSetting`.
+    /// `icNoSetting`: neither flag; Windows decides.
     NoSetting,
-    /// `coCloseOnExit`.
+    /// `icYes` (`closeonexit` flag): the console window closes.
     Close,
-    /// `coDontCloseOnExit`.
+    /// `icNo` (`dontcloseonexit` flag): it stays open.
     DontClose,
 }
 
@@ -52,20 +42,35 @@ stable_name_enum!(CloseOnExit, {
     Self::DontClose => "dont_close",
 });
 
-/// `TSetupIconOptions` flag bits.
+/// `TSetupIconEntry.Options`: the entry's `Flags:` that have a bit of
+/// their own. `runminimized` / `runmaximized` set [`IconEntry::show_command`]
+/// and `closeonexit` / `dontcloseonexit` [`IconEntry::close_on_exit`].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum IconFlag {
+    /// `ioUninsNeverUninstall` (`uninsneveruninstall`): the uninstaller
+    /// leaves the shortcut.
     NeverUninstall,
-    /// Pre-1.3.26 only - replaced by `ShowCmd` later.
+    /// `ioRunMinimized` (`runminimized`): before `ShowCmd`, the shortcut
+    /// starts its program minimized (before SetupID 1.3.25).
     RunMinimized,
+    /// `ioCreateOnlyIfFileExists` (`createonlyiffileexists`): create the
+    /// shortcut only if `Filename` exists.
     CreateOnlyIfFileExists,
+    /// `ioUseAppPaths` (`useapppaths`): `Filename` is a bare name whose path
+    /// comes from the `App Paths` registry key.
     UseAppPaths,
-    /// 5.0.3..6.3.0 only.
+    /// `ioFolderShortcut` (`foldershortcut`): a shortcut to a folder that
+    /// opens as the folder itself (5.0.3 to 6.3.0).
     FolderShortcut,
+    /// `ioExcludeFromShowInNewInstall` (`excludefromshowinnewinstall`): no
+    /// new-program highlight in the Start menu (5.4.2+).
     ExcludeFromShowInNewInstall,
+    /// `ioPreventPinning` (`preventpinning`): the Start menu entry cannot be
+    /// pinned (5.5.0+).
     PreventPinning,
+    /// `ioHasAppUserModelToastActivatorCLSID`: the entry gave
+    /// `AppUserModelToastActivatorCLSID:` (6.1.0+).
     HasAppUserModelToastActivatorCLSID,
 }
 
@@ -80,53 +85,68 @@ stable_flag_enum!(IconFlag, {
     HasAppUserModelToastActivatorCLSID => "has_app_user_model_toast_activator_clsid",
 });
 
-/// Parsed `TSetupIconEntry`.
+/// One `[Icons]` entry (`TSetupIconEntry`). A string field the version does
+/// not have is empty; paths may contain constants such as `{group}`,
+/// unexpanded.
 #[derive(Clone, Debug)]
 pub struct IconEntry {
-    /// `Name:` directive - full shortcut path including `.lnk`.
+    /// `Name:` (Pascal `IconName`): the shortcut's path without extension,
+    /// e.g. `{group}\My Program`; Setup adds `.lnk`, or `.url` when
+    /// `Filename` is a URL.
     pub name: String,
-    /// `Filename:` directive.
+    /// `Filename:`: what the shortcut opens, a file, folder or URL.
     pub filename: String,
-    /// `Parameters:` directive.
+    /// `Parameters:`: the command-line arguments.
     pub parameters: String,
-    /// `WorkingDir:` directive.
+    /// `WorkingDir:`: the "Start in" directory; empty means the directory
+    /// of `Filename`.
     pub working_dir: String,
-    /// `IconFilename:` directive.
+    /// `IconFilename:`: the file holding the icon; empty means `Filename`'s
+    /// own.
     pub icon_file: String,
-    /// `Comment:` directive.
+    /// `Comment:`: the shortcut's description, shown as its tooltip.
     pub comment: String,
-    /// `[ItemConditions]`.
+    /// `Components:` .. `AfterInstall:`.
     pub conditions: ItemConditions,
-    /// `AppUserModelID:` directive (5.3.5+).
+    /// `AppUserModelID:`: the shortcut's Application User Model ID, for
+    /// taskbar grouping (5.3.5+).
     pub app_user_model_id: String,
-    /// `AppUserModelToastActivatorCLSID:` 16-byte GUID (6.1.0+).
+    /// `AppUserModelToastActivatorCLSID:` as its 16 `TGUID` bytes (6.1.0+;
+    /// `None` before). All zeros unless
+    /// [`IconFlag::HasAppUserModelToastActivatorCLSID`] is set.
     pub app_user_model_toast_activator_clsid: Option<[u8; 16]>,
-    /// `[WindowsVersionRange]`.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
-    /// `IconIndex:` directive.
+    /// `IconIndex:`: which icon in `IconFilename`, zero-based.
     pub icon_index: i32,
-    /// `ShowCmd:` directive. Defaults to 1 (`SW_SHOWNORMAL`) on
-    /// pre-1.3.24 versions.
+    /// `ShowCmd`: the `ShowWindow` command the program starts with:
+    /// `SW_SHOWNORMAL` (1) by default, `SW_SHOWMINNOACTIVE` (7) with
+    /// `runminimized`, `SW_SHOWMAXIMIZED` (3) with `runmaximized` (1.3.24+; 1
+    /// before).
     pub show_command: i32,
-    /// `CloseOnExit:` directive (1.3.15+).
+    /// `CloseOnExit`, decoded (1.3.15+; `None` before, or for a value this
+    /// crate does not know).
     pub close_on_exit: Option<CloseOnExit>,
-    /// Raw close-on-exit byte (0 if absent in version).
+    /// `CloseOnExit` as stored; 0 when the version has no such byte.
     pub close_on_exit_raw: u8,
-    /// `HotKey:` directive (2.0.7+).
+    /// `HotKey:` in `IShellLink::SetHotkey` form: the virtual-key code in
+    /// the low byte, `HOTKEYF_SHIFT` (1), `HOTKEYF_CONTROL` (2) and
+    /// `HOTKEYF_ALT` (4) in the high byte; 0 for none (2.0.7+).
     pub hotkey: u16,
-    /// Decoded options.
+    /// `Options`, decoded.
     pub flags: HashSet<IconFlag>,
-    /// Raw `Options` bytes.
+    /// `Options` as stored: the set's bytes, whose size grows with the
+    /// number of flags the version defines.
     pub options_raw: Vec<u8>,
 }
 
-impl IconEntry {
+impl FromReader for IconEntry {
     /// Reads one `TSetupIconEntry`.
     ///
     /// # Errors
     ///
     /// String / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let name = read_setup_string(reader, version, "Icon.Name")?;
         let filename = read_setup_string(reader, version, "Icon.Filename")?;
         let parameters = read_setup_string(reader, version, "Icon.Parameters")?;
@@ -150,7 +170,7 @@ impl IconEntry {
 
         let winver = WindowsVersionRange::read(reader, version)?;
 
-        let icon_index = reader.i32_le("Icon.IconIndex")?;
+        let icon_index = reader.native_i32(version, "Icon.IconIndex")?;
 
         let show_command = if version.at_least(1, 3, 24) {
             reader.i32_le("Icon.ShowCmd")?
@@ -172,8 +192,8 @@ impl IconEntry {
         };
 
         let table = icon_flag_table(version);
-        let raw = reader.set_bytes(table.len(), true, "Icon.Options")?;
-        let flags = super::decode_packed_flags(&raw, &table);
+        let raw = reader.set_bytes(table.len(), version, "Icon.Options")?;
+        let flags = crate::util::flags::decode_packed_flags(&raw, &table);
 
         Ok(Self {
             name,
@@ -214,11 +234,19 @@ impl CloseOnExit {
 
 fn icon_flag_table(version: &Version) -> Vec<IconFlag> {
     let mut t = vec![IconFlag::NeverUninstall];
-    if !version.at_least(1, 3, 26) {
+    // `ioRunMinimized` went when `ShowCmd` arrived. Releases 1.3.25 and
+    // 1.3.26 both write SetupID 1.3.25, and innoextract has 1.3.25 still
+    // carrying the flag; only 1.3.26's source is available, and it has
+    // none. The marker cannot tell them apart, so 1.3.25 installers follow
+    // 1.3.26 here and a 1.3.25 release's flags 1 and 2 read one bit late.
+    if !version.at_least(1, 3, 25) {
         t.push(IconFlag::RunMinimized);
     }
     t.push(IconFlag::CreateOnlyIfFileExists);
-    t.push(IconFlag::UseAppPaths);
+    // App Paths are a Win32 registry key; a 16-bit installer has no flag.
+    if !version.is_16bit() {
+        t.push(IconFlag::UseAppPaths);
+    }
     if version.at_least(5, 0, 3) && !version.at_least(6, 3, 0) {
         t.push(IconFlag::FolderShortcut);
     }

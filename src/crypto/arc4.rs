@@ -9,7 +9,7 @@
 //! - The algorithm is tiny and trivially auditable.
 //! - It's only used for legacy chunk decryption - no other crate
 //!   in our dep graph wants it.
-//! - Innoextract takes the same approach (`research/src/crypto/arc4.cpp`).
+//! - Innoextract takes the same approach (innoextract `crypto/arc4.cpp`).
 //!
 //! Per Inno Setup's 5.3.9..6.4 implementation: the chunk's per-
 //! chunk salt + password is hashed (SHA-1 or MD5 per version) and
@@ -18,7 +18,7 @@
 /// RC4 cipher state. Construct with [`Self::new`], then call
 /// [`Self::apply`] one or more times to XOR the keystream over a
 /// buffer in place.
-pub(crate) struct Rc4 {
+pub struct Rc4 {
     s: [u8; 256],
     i: u8,
     j: u8,
@@ -28,7 +28,7 @@ impl Rc4 {
     /// Initializes the cipher state via RC4's Key Scheduling
     /// Algorithm (KSA). `key` must be 1..=256 bytes; longer keys
     /// are accepted but only the first 256 bytes affect the state.
-    pub(crate) fn new(key: &[u8]) -> Self {
+    pub fn new(key: &[u8]) -> Self {
         let mut s = [0u8; 256];
         for (i, slot) in s.iter_mut().enumerate() {
             // i is bounded by 256 (loop length), so the cast is
@@ -66,12 +66,12 @@ impl Rc4 {
     /// to any buffer. Inno's pre-6.4 chunk decryption discards the
     /// first 1000 bytes of the keystream after KSA - biased early
     /// bytes were the WEP attack surface, and ISCrypt.dll mirrors
-    /// the standard RC4-drop hardening (`research/src/stream/chunk.cpp:72`,
+    /// the standard RC4-drop hardening (innoextract `stream/chunk.cpp`,
     /// `arc4.discard(1000)`). Skipping the discard produces a
     /// keystream that XORs cleanly through password verification
     /// (which doesn't use the chunk RC4) but yields garbage at the
     /// chunk-decrypt step - observable as malformed LZMA streams.
-    pub(crate) fn discard(&mut self, n: usize) {
+    pub fn discard(&mut self, n: usize) {
         for _ in 0..n {
             self.i = self.i.wrapping_add(1);
             let s_i = match self.s.get(usize::from(self.i)) {
@@ -90,7 +90,7 @@ impl Rc4 {
     /// Applies the keystream to `buf` in place (XOR). Symmetric:
     /// calling `apply` twice with the same key restores the
     /// original bytes.
-    pub(crate) fn apply(&mut self, buf: &mut [u8]) {
+    pub fn apply(&mut self, buf: &mut [u8]) {
         for byte in buf.iter_mut() {
             self.i = self.i.wrapping_add(1);
             let s_i = match self.s.get(usize::from(self.i)) {

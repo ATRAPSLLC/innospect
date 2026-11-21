@@ -2,9 +2,7 @@
 //! [`OffsetTable`].
 //!
 //! The format has gone through three generations across the
-//! `1.2.10 → 7.0.0.3` range. The full evolution table lives in
-//! `research-notes/10-version-evolution.md` §B.1; this module
-//! summarizes:
+//! history:
 //!
 //! - **Pre-5.1.5**: variable-length record located via the `0x30`
 //!   file-offset pointer; checksum optional (≥ 4.0.10), Adler32 vs
@@ -12,13 +10,14 @@
 //!   `exe_compressed_size` removed at 4.1.6. We model these as a
 //!   single "v0" layout that handles all sub-cases via version
 //!   gates.
-//! - **5.1.5 → 6.5.1**: 32-bit fields in a fixed-shape record stored
-//!   as PE resource `11111`, prefixed by a 4-byte `revision = 1`.
-//!   We model this as "v1".
-//! - **6.5.2 → 7.0.0.3**: 64-byte fixed record, `version = 2`,
-//!   `Int64` offsets, no `message_offset`, no `exe_compressed_size`,
-//!   trailing CRC32 covers the entire preceding record. We model
-//!   this as "v2".
+//! - **5.1.5 to 6.4.x**: 32-bit fields in a fixed-shape record stored
+//!   as PE resource `11111`, with `Version = 1`. We model this as "v1".
+//! - **6.5.0 on**: a 64-byte record, `Version = 2`, `Int64` offsets, a
+//!   padding field, and a trailing CRC-32 over everything before it. We
+//!   model this as "v2".
+//!
+//! The parser picks the generation from the record itself (its magic and
+//! `Version` field), not from the installer's version.
 
 use crate::{
     error::Error,
@@ -123,11 +122,17 @@ impl SetupLdrFamily {
 pub enum OffsetTableGeneration {
     /// Pre-5.1.5 variable-shape record.
     V0,
-    /// 5.1.5 → 6.5.1 fixed 32-bit record (`Version = 1`).
+    /// The 5.1.5 to 6.4.x fixed 32-bit record (`Version = 1`).
     V1,
-    /// 6.5.2+ fixed 64-byte record (`Version = 2`).
+    /// The 6.5.0+ 64-byte record (`Version = 2`).
     V2,
 }
+
+stable_name_enum!(OffsetTableGeneration, {
+    Self::V0 => "v0",
+    Self::V1 => "v1",
+    Self::V2 => "v2",
+});
 
 /// How / where the offset table was found inside the PE.
 #[derive(Clone, Copy, Debug)]
@@ -142,38 +147,34 @@ pub struct OffsetTableSource {
     pub generation: OffsetTableGeneration,
 }
 
-/// Decoded `SetupLdrOffsetTable`.
-///
-/// Field meanings, per `Shared.Struct.pas:423-435`:
-/// - `offset_setup0` ⇒ where the 64-byte SetupID marker begins
-///   (canonical `Offset0`).
-/// - `offset_setup1` ⇒ where the file payload chunks begin (canonical
-///   `Offset1`); `0` means the payload lives in external `setup-N.bin`
-///   files.
-/// - `offset_exe` ⇒ where the compressed `setup.e32`/`setup.e64`
-///   stub-handoff payload begins (canonical `OffsetEXE`).
+/// The setup loader's `TSetupLdrOffsetTable`: where in the installer the
+/// pieces SetupLdr unpacks are. Offsets are from the start of the file.
 #[derive(Clone, Debug)]
 pub struct OffsetTable {
     /// Provenance of the bytes we decoded.
     pub source: OffsetTableSource,
-    /// `OffsetTable.Version` field (`1` or `2` for v1/v2; `0` for the
-    /// pre-5.1.5 path that has no explicit version field).
+    /// `Version`: 1 or 2; 0 for the pre-5.1.5 tables, which have none.
     pub version_id: u32,
-    /// `OffsetEXE`.
+    /// `OffsetEXE`: where the compressed Setup program (`setup.e32` /
+    /// `setup.e64`) starts.
     pub offset_exe: u64,
-    /// `Offset0` (start of `setup-0.bin` data).
+    /// `Offset0`: where setup-0 starts, with its SetupID marker.
     pub offset_setup0: u64,
-    /// `Offset1` (start of `setup-1.bin` data, or `0` for external).
+    /// `Offset1`: where setup-1's data starts; 0 when it is in separate
+    /// `setup-N.bin` files (`DiskSpanning=yes`).
     pub offset_setup1: u64,
-    /// `UncompressedSizeEXE`.
+    /// `UncompressedSizeEXE`: the Setup program's size before compression.
     pub uncompressed_size_exe: u32,
-    /// `CRCEXE`.
+    /// `CRCEXE`: its CRC-32 before compression (Adler-32 before 4.0.3).
     pub crc_exe: u32,
-    /// `TotalSize` (v2 only; `0` otherwise).
+    /// `TotalSize`: the smallest the installer file can be; SetupLdr
+    /// refuses a shorter (truncated) one (64-bit in v2).
     pub total_size: u64,
-    /// `message_offset` (pre-4.0.0 only; `0` otherwise).
+    /// `OffsetMsg`: where the loader's messages start (before 4.0.0; 0
+    /// after).
     pub message_offset: u32,
-    /// `exe_compressed_size` (pre-4.1.6 only; `0` otherwise).
+    /// `CompressedSizeEXE`: the Setup program's compressed size (before
+    /// 4.1.6; 0 after).
     pub exe_compressed_size: u32,
 }
 
@@ -305,7 +306,7 @@ impl OffsetTable {
         // The "discarded" first u32 is the `TotalSize` upper word
         // before it was widened to Int64. We capture it but don't
         // expose it.
-        let _total_size_lo = reader.u32_le("v1 placeholder/total")?;
+        let total_size = u64::from(reader.u32_le("v1 TotalSize")?);
         let offset_exe = u64::from(reader.u32_le("v1 OffsetEXE")?);
         let uncompressed_size_exe = reader.u32_le("v1 UncompressedSizeEXE")?;
         let crc_exe = reader.u32_le("v1 CRCEXE")?;
@@ -342,7 +343,7 @@ impl OffsetTable {
             offset_setup1,
             uncompressed_size_exe,
             crc_exe,
-            total_size: 0,
+            total_size,
             message_offset: 0,
             exe_compressed_size: 0,
         })
@@ -358,9 +359,7 @@ impl OffsetTable {
         // Cursor is positioned right after the 12-byte magic.
         let (min_a, min_b, min_c) = family.min_version();
 
-        // Skip a u32 (innoextract reads-and-discards here; the field is
-        // the historical `TotalSize` lower word).
-        let _ = reader.u32_le("legacy placeholder")?;
+        let total_size = u64::from(reader.u32_le("legacy TotalSize")?);
 
         let offset_exe = u64::from(reader.u32_le("legacy OffsetEXE")?);
 
@@ -415,7 +414,7 @@ impl OffsetTable {
             offset_setup1,
             uncompressed_size_exe,
             crc_exe,
-            total_size: 0,
+            total_size,
             message_offset,
             exe_compressed_size,
         })

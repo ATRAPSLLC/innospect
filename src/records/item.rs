@@ -29,43 +29,40 @@
 use crate::{
     error::Error,
     records::windows::WindowsVersionRange,
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// Conditions section read by every record-with-conditions.
-///
-/// All six fields are length-prefixed strings (UTF-16LE on Unicode
-/// builds, ANSI on legacy ones - codepage selection follows
-/// `util::encoding::is_unicode_for_version`). Fields that
-/// don't yet exist in the parsed installer's version remain empty.
+/// The conditions an entry is processed under, which every file, directory,
+/// icon, INI, registry, delete and run entry carries in these six strings.
+/// An empty one is no condition. A field the version does not have is
+/// empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ItemConditions {
-    /// `Components:` directive - semicolon-separated list of
-    /// component names this entry is gated on. Inno Setup 2.0+
-    /// (or ISX 1.3.8+).
+    /// `Components:`: the components the entry belongs to, as a
+    /// space-separated list (any selected one will do) or a boolean
+    /// expression with `not`, `and`, `or` (2.0.0+, or ISX 1.3.8+).
     pub components: String,
-    /// `Tasks:` directive - semicolon-separated list of task names
-    /// this entry is gated on. Inno Setup 2.0+ (or ISX 1.3.17+).
+    /// `Tasks:`: the tasks it belongs to, in the same form (2.0.0+, or ISX
+    /// 1.3.17+).
     pub tasks: String,
-    /// `Languages:` directive. Inno Setup 4.0.1+.
+    /// `Languages:`: the languages it belongs to, in the same form
+    /// (4.0.1+).
     pub languages: String,
-    /// `Check:` directive - Pascal expression / function name
-    /// gating this entry. Inno Setup 4.0.0+ (or ISX 1.3.24+).
+    /// `Check:`: a `[Code]` function call, e.g. `IsWin64`; the entry is
+    /// processed only if it returns true (4.0.0+, or ISX 1.3.24+).
     pub check: String,
-    /// `AfterInstall:` directive. Inno Setup 4.1.0+. Note: declared
-    /// **before** `before_install` on disk, matching the Pascal
-    /// `TSetupItem` field order.
+    /// `AfterInstall:`: a `[Code]` procedure call run after the entry is
+    /// processed. Stored before `BeforeInstall` (4.1.0+).
     pub after_install: String,
-    /// `BeforeInstall:` directive. Inno Setup 4.1.0+.
+    /// `BeforeInstall:`: a `[Code]` procedure call run before (4.1.0+).
     pub before_install: String,
 }
 
-// Constructors are dead-code under non-test builds until the
-// individual record loaders (3c–3e) call them. Suppress the lint
-// rather than churning visibility.
-#[allow(dead_code)]
-impl ItemConditions {
+impl FromReader for ItemConditions {
     /// Reads the conditions section from the reader.
     ///
     /// Reads zero bytes when the parsed `version` predates all six
@@ -74,7 +71,7 @@ impl ItemConditions {
     /// # Errors
     ///
     /// String-decoding errors per [`read_setup_string`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let mut out = Self::default();
 
         if version.at_least(2, 0, 0) || (version.is_isx() && version.at_least(1, 3, 8)) {
@@ -98,31 +95,26 @@ impl ItemConditions {
     }
 }
 
-/// Conditions section + Windows version range, read back-to-back.
-///
-/// Convenience for record types whose Pascal layout reads
-/// `load_condition_data` and `load_version_data` consecutively
-/// (file / ini / run / icon / registry / delete entries - the
-/// majority). Record types that interpose fields between the two
-/// (currently only `directory_entry`) must read the parts
-/// separately.
+/// An entry's [`ItemConditions`] and its Windows version range together.
+/// File, INI, delete and run entries store the two next to each other;
+/// directory, icon and registry entries have fields between them, so they
+/// keep the parts apart.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ItemBase {
-    /// Conditions strings.
+    /// `Components:` .. `AfterInstall:`.
     pub conditions: ItemConditions,
-    /// Windows version range - `MinVersion` + `OnlyBelowVersion`.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
 }
 
-#[allow(dead_code)]
-impl ItemBase {
+impl FromReader for ItemBase {
     /// Reads conditions then the version range. See struct-level
     /// docs for the limits of this convenience.
     ///
     /// # Errors
     ///
     /// Same as [`ItemConditions::read`] / [`WindowsVersionRange::read`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let conditions = ItemConditions::read(reader, version)?;
         let winver = WindowsVersionRange::read(reader, version)?;
         Ok(Self { conditions, winver })

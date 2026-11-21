@@ -19,25 +19,29 @@
 //! windows_version_range = [ MinVersion (10) | OnlyBelowVersion (10) ]   // 20 bytes
 //! ```
 //!
-//! See `research-notes/11-fixed-tail.md` and innoextract
-//! `research/src/setup/windows.cpp` for cross-references.
+//! Reader reference: innoextract `setup/windows.cpp`.
 
-use crate::{error::Error, util::read::Reader, version::Version};
+use crate::{
+    error::Error,
+    util::read::{FromReader, Reader},
+    version::Version,
+};
 
-/// Windows kernel/NT version triple. Pascal `TSetupVersionDataVersion`,
-/// also the on-disk shape of the `Cardinal` halves of
-/// `TSetupVersionData` (4 bytes).
+/// One Windows version, e.g. 10.0.19045 (`TSetupVersionDataVersion`, the
+/// shape of each half of [`TargetWindows`]). All zeros means "never", as a
+/// `MinVersion` of 0 does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowsVersion {
-    /// `Build` - minor build number (e.g. 19045 for Windows 10 22H2).
+    /// `Build`: the build number, e.g. 19045 for Windows 10 22H2 (1.3.19+;
+    /// 0 before).
     pub build: u16,
-    /// `Minor` - Windows minor version.
+    /// `Minor`: the minor version, e.g. 0 for Windows 10.
     pub minor: u8,
-    /// `Major` - Windows major version.
+    /// `Major`: the major version, e.g. 10.
     pub major: u8,
 }
 
-impl WindowsVersion {
+impl FromReader for WindowsVersion {
     /// Reads 4 bytes for a Windows version triple.
     ///
     /// Inno Setup format ≥ 1.3.19 stores a leading `u16` build;
@@ -46,7 +50,7 @@ impl WindowsVersion {
     /// # Errors
     ///
     /// Returns [`Error::Truncated`] / [`Error::Overflow`] on EOF.
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let build = if version.at_least(1, 3, 19) {
             reader.u16_le("WindowsVersion.Build")?
         } else {
@@ -62,31 +66,33 @@ impl WindowsVersion {
     }
 }
 
-/// `nt_service_pack` - major / minor service pack number.
+/// An NT service pack level, e.g. 1.0 for Service Pack 1
+/// (`TSetupVersionData.NTServicePack`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ServicePack {
-    /// `NTServicePack.Minor`.
+    /// The minor service pack number.
     pub minor: u8,
-    /// `NTServicePack.Major`.
+    /// The major service pack number.
     pub major: u8,
 }
 
-/// `TSetupEntryBitness` - Inno Setup 6.7.0+ replacement for the
-/// pre-6.7 `*32Bit` / `*64Bit` flag bits on file / registry / run
-/// entries. One byte on disk.
+/// `Bitness` (`TSetupEntryBitness`, SetupID 7.0.0.3+): whether a file,
+/// registry or run entry uses the 32- or 64-bit file system, registry view
+/// or program. It replaced the `32bit` / `64bit` flag bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Bitness {
-    /// `ebInstallDefault` - match the installer's default bitness.
+    /// `ebInstallDefault`: the install mode's bitness, 64-bit in 64-bit
+    /// install mode (`ArchitecturesInstallIn64BitMode`), else 32-bit.
     InstallDefault,
-    /// `eb32Bit`.
+    /// `eb32Bit` (`32bit` flag).
     Bits32,
-    /// `eb64Bit`.
+    /// `eb64Bit` (`64bit` flag).
     Bits64,
-    /// `ebNativeBit` - the native bitness of the running OS.
+    /// `ebNativeBit`: the bitness of the Windows Setup runs on.
     Native,
-    /// `ebCurrentProcessBit` - the bitness of the currently-running
-    /// installer process.
+    /// `ebCurrentProcessBit`: the bitness of Setup itself, which the
+    /// compiler uses for the uninstaller's own entry.
     CurrentProcess,
 }
 
@@ -115,19 +121,22 @@ impl Bitness {
     }
 }
 
-/// Pascal `TSetupVersionData` - a target Windows version pinning the
-/// underlying kernel + NT version + service pack. 10 bytes on disk.
+/// A Windows version bound (`TSetupVersionData`): one version for the
+/// Windows 95/98/Me line (`WinVersion`) and one for the NT line
+/// (`NTVersion`, every Windows since 2000), with an NT service pack level.
+/// Releases that no longer support Windows 9x store 0 for `WinVersion`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetWindows {
-    /// `WinVersion`.
+    /// `WinVersion`: the Windows 9x bound.
     pub windows: WindowsVersion,
-    /// `NTVersion`.
+    /// `NTVersion`: the NT bound.
     pub nt: WindowsVersion,
-    /// `NTServicePack`.
+    /// `NTServicePack`: the service pack the NT bound requires (1.3.19+;
+    /// 0 before).
     pub service_pack: ServicePack,
 }
 
-impl TargetWindows {
+impl FromReader for TargetWindows {
     /// Reads a `TSetupVersionData` from the reader. 10 bytes for
     /// versions ≥ 1.3.19; 8 bytes for older versions (no service-pack
     /// field).
@@ -135,7 +144,7 @@ impl TargetWindows {
     /// # Errors
     ///
     /// Same as [`WindowsVersion::read`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let windows = WindowsVersion::read(reader, version)?;
         let nt = WindowsVersion::read(reader, version)?;
         let service_pack = if version.at_least(1, 3, 19) {
@@ -154,25 +163,25 @@ impl TargetWindows {
     }
 }
 
-/// Min / OnlyBelow version range. 20 bytes on disk (two
-/// [`TargetWindows`] back to back). Used by both `TSetupHeader` and
-/// every per-record `ItemBase`.
+/// The Windows versions something applies to: from `MinVersion` up to,
+/// not including, `OnlyBelowVersion`. Both the setup header and every
+/// entry carry one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowsVersionRange {
-    /// Minimum supported Windows version (`MinVersion` /
-    /// `WindowsVersionRange.begin` per innoextract).
+    /// `MinVersion`: the lowest version; all zeros means never.
     pub min: TargetWindows,
-    /// Upper-exclusive bound (`OnlyBelowVersion` / `.end`).
+    /// `OnlyBelowVersion`: the first version excluded; all zeros means no
+    /// upper bound.
     pub only_below: TargetWindows,
 }
 
-impl WindowsVersionRange {
+impl FromReader for WindowsVersionRange {
     /// Reads 20 bytes (two [`TargetWindows`]).
     ///
     /// # Errors
     ///
     /// Same as [`TargetWindows::read`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let min = TargetWindows::read(reader, version)?;
         let only_below = TargetWindows::read(reader, version)?;
         Ok(Self { min, only_below })

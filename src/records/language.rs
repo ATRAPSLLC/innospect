@@ -1,59 +1,42 @@
-//! `TSetupLanguageEntry` - `[Languages]` section entry.
+//! `TSetupLanguageEntry`: one `[Languages]` entry, a language the wizard
+//! can run in, with its messages, fonts and per-language license and info
+//! texts (4.0.0+; earlier releases have a single language and no entries).
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupLanguageEntry = packed record
-//!     Name: AnsiString;        // since 4.0.0
-//!     LanguageName: AnsiString;
-//!     DialogFontName, TitleFontName, WelcomeFontName,
-//!         CopyrightFontName: AnsiString;
-//!     Data: AnsiString;        // since 4.0.0
-//!     LicenseText, InfoBeforeText, InfoAfterText: AnsiString;  // since 4.0.1
-//!     LanguageId: Cardinal;
-//!     LanguageCodepage: Cardinal;  // 4.2.2+ (non-Unicode); pre-5.3 unicode skip-u32
-//!     DialogFontSize: Integer;
-//!     DialogFontStandardHeight: Integer;  // pre-4.1.0 only
-//!     TitleFontSize, WelcomeFontSize, CopyrightFontSize: Integer;
-//!     RightToLeft: Boolean;    // since 5.2.3
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/language.cpp`. Note that
-//! "binary_string" in innoextract is a length-prefixed raw blob -
-//! always read as the wire bytes regardless of unicode build. We use
-//! `read_ansi_bytes` here.
-//!
-//! Codepage selection (matches innoextract):
-//! - Unicode build (5.6+ and most 5.3+ Unicode) ⇒ `UTF-16LE`.
-//! - Pre-4.2.2 ANSI ⇒ derived from a Windows language-id table.
-//! - 4.2.2+ ANSI ⇒ wire field `language_codepage` (defaulting to 1252).
+//! On disk (`SECompressedBlockWrite`): before 6.6.0 `Name` (4.0.0+),
+//! `LanguageName`, four font names, `Data` (4.0.0+), `LicenseText`,
+//! `InfoBeforeText`, `InfoAfterText` (4.0.1+), `LanguageID` (32-bit), from
+//! 4.2.2 `LanguageCodePage`, `DialogFontSize`, before 4.1.0
+//! `DialogFontStandardHeight`, the title, welcome and copyright font
+//! sizes, and from 5.2.3 `RightToLeft`. 6.6.0 dropped the title and
+//! copyright fonts and the code page, narrowed `LanguageID` to 16 bits and
+//! added `DialogFontBaseScaleHeight` / `Width`. In Unicode builds the names
+//! are UTF-16LE (`String`) and the rest raw bytes (`AnsiString`); every
+//! field is kept as stored, see [`LanguageEntry::codepage`]. Reader
+//! reference: innoextract `setup/language.cpp`; every layout is checked
+//! against upstream's own declarations by the `crate::upstream` tests.
 
 use crate::{
     error::Error,
     util::{
         encoding::{is_unicode_for_version, read_ansi_bytes},
-        read::Reader,
+        read::{FromReader, Reader},
     },
     version::Version,
 };
 
-/// Codepage of an Inno Setup language entry.
-///
-/// Matches innoextract's reduced codepage enum: Unicode installers
-/// always declare `Utf16Le`; legacy installers can carry one of a
-/// handful of Windows codepages. Unknown values are surfaced as
-/// [`Self::Other`] with the raw codepage number for caller-side
-/// handling.
+/// The encoding of a language entry's name fields and, in ANSI builds, of
+/// its messages: UTF-16LE in Unicode builds, else the language's Windows
+/// code page (`LanguageCodePage` from 4.2.2, derived from the language ID
+/// before, as innoextract does).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguageCodepage {
-    /// `cp_utf16le` - modern unicode builds.
+    /// A Unicode build: UTF-16LE (code page 1200).
     Utf16Le,
-    /// Numeric Windows codepage (e.g. 1252, 1251, 932). The variant
-    /// covers every legacy ANSI installer; common values are
-    /// 1250..1258 plus the East-Asian double-byte pages.
+    /// An ANSI build's Windows code page, e.g. 1252, 1251 or 932.
     Windows(u32),
-    /// Codepage explicitly absent (older versions / unknown numeric).
+    /// A code page held as given. The reader never produces it, mapping
+    /// every ANSI code page to [`Self::Windows`]; it is for values a caller
+    /// builds itself.
     Other(u32),
 }
 
@@ -136,91 +119,113 @@ impl core::fmt::Display for LanguageCodepage {
     }
 }
 
-/// Parsed `TSetupLanguageEntry`.
-///
-/// Strings are returned as raw bytes (`Vec<u8>`) - codepage decoding
-/// to `String` happens above this layer once a target encoding is
-/// chosen. The associated codepage is exposed via
-/// [`Self::codepage`]. For 6.x Unicode installers the bytes are
-/// UTF-16LE.
+/// One `[Languages]` entry (`TSetupLanguageEntry`). Fields are the bytes
+/// as stored: decode the names with [`Self::codepage`] (or
+/// [`Self::name_string`]); the texts are the files the script named, as
+/// they were. A field the version does not have is empty or 0.
 #[derive(Clone, Debug)]
 pub struct LanguageEntry {
-    /// `Name:` directive - language identifier (e.g. `"english"`).
-    /// 4.0.0+; absent on older versions.
+    /// `Name:`: the language's internal name, e.g. `english`, which
+    /// `Languages:` parameters name (4.0.0+).
     pub name: Vec<u8>,
-    /// Human-readable language name (e.g. `"English"`).
+    /// `LanguageName` (from the messages file's `[LangOptions]`): the name
+    /// the language list shows, e.g. `English`. UTF-16LE from 4.2.2 in
+    /// every build, ANSI ones included ([`Self::language_name_utf16`]);
+    /// decode it with [`Self::language_name_string`].
     pub language_name: Vec<u8>,
-    /// Default dialog font name.
+    /// Whether [`Self::language_name`] is UTF-16LE whatever
+    /// [`Self::codepage`] says: from 4.2.2, when upstream made it Unicode
+    /// (`Struct.pas`: "LanguageName is Unicode").
+    pub language_name_utf16: bool,
+    /// `DialogFontName`: the wizard's dialog font.
     pub dialog_font: Vec<u8>,
-    /// Default title font name.
+    /// `TitleFontName`: the background window's title font (before 6.6.0).
     pub title_font: Vec<u8>,
-    /// Welcome page font name.
+    /// `WelcomeFontName`: the Welcome page heading font.
     pub welcome_font: Vec<u8>,
-    /// Copyright text font name.
+    /// `CopyrightFontName`: the background window's copyright font (before
+    /// 6.6.0).
     pub copyright_font: Vec<u8>,
-    /// Opaque per-language `Data` blob. 4.0.0+.
+    /// `Data`: the language's compiled messages file, a `TMessagesHeader`
+    /// followed by every setup message, in [`Self::codepage`] for ANSI
+    /// builds (4.0.0+).
     pub data: Vec<u8>,
-    /// `LicenseText:` directive value. 4.0.1+.
+    /// `LicenseFile:` for this language: the file's bytes as stored, RTF or
+    /// plain text (4.0.1+).
     pub license_text: Vec<u8>,
-    /// `InfoBeforeText:` directive value. 4.0.1+.
+    /// `InfoBeforeFile:` for this language, as stored (4.0.1+).
     pub info_before: Vec<u8>,
-    /// `InfoAfterText:` directive value. 4.0.1+.
+    /// `InfoAfterFile:` for this language, as stored (4.0.1+).
     pub info_after: Vec<u8>,
-    /// Windows `LANGID` (e.g. `0x0409` for U.S. English).
+    /// `LanguageID`: the Windows `LANGID`, e.g. `0x0409` for U.S. English
+    /// (16-bit from 6.6.0).
     pub language_id: u32,
-    /// Resolved codepage for the language's strings.
+    /// How the name fields, and in ANSI builds the messages, are encoded.
+    /// Before 4.2.2, which stores none, the code page Windows uses for
+    /// [`Self::language_id`].
     pub codepage: LanguageCodepage,
-    /// `DialogFontSize` (in points).
+    /// `DialogFontSize`, in points.
     pub dialog_font_size: u32,
-    /// `DialogFontStandardHeight`. Pre-4.1.0 only; 0 otherwise.
+    /// `DialogFontStandardHeight` (before 4.1.0; 0 after).
     pub dialog_font_standard_height: u32,
-    /// `TitleFontSize`.
+    /// `DialogFontBaseScaleHeight`: the font height the wizard's layout is
+    /// scaled from (6.6.0+; 0 before).
+    pub dialog_font_base_scale_height: u32,
+    /// `DialogFontBaseScaleWidth`: the matching average character width
+    /// (6.6.0+; 0 before).
+    pub dialog_font_base_scale_width: u32,
+    /// `TitleFontSize`, in points (before 6.6.0).
     pub title_font_size: u32,
-    /// `WelcomeFontSize`.
+    /// `WelcomeFontSize`, in points.
     pub welcome_font_size: u32,
-    /// `CopyrightFontSize`.
+    /// `CopyrightFontSize`, in points (before 6.6.0).
     pub copyright_font_size: u32,
-    /// `RightToLeft:` flag. 5.2.3+.
+    /// `RightToLeft`: the language reads right to left (5.2.3+).
     pub right_to_left: bool,
 }
 
 impl LanguageEntry {
+    /// [`Self::name`] decoded with [`Self::codepage`]; `None` when the
+    /// bytes are not valid in it.
+    #[must_use]
+    pub fn name_string(&self) -> Option<String> {
+        self.codepage.decode(&self.name)
+    }
+
+    /// [`Self::language_name`] decoded: as UTF-16LE when
+    /// [`Self::language_name_utf16`], else with [`Self::codepage`].
+    #[must_use]
+    pub fn language_name_string(&self) -> Option<String> {
+        if self.language_name_utf16 {
+            LanguageCodepage::Utf16Le.decode(&self.language_name)
+        } else {
+            self.codepage.decode(&self.language_name)
+        }
+    }
+}
+
+impl FromReader for LanguageEntry {
     /// Reads one `TSetupLanguageEntry`.
     ///
     /// 6.6.0 reworked the entry: dropped the `Title*` and
     /// `Copyright*` fonts, narrowed `LanguageID` from `Cardinal` to
     /// `Word`, removed the per-language `Codepage`, and added
     /// `DialogFontBaseScaleHeight/Width`. The reader dispatches per
-    /// version. See `research-notes/12-format-evolution-audit.md`.
+    /// version.
     ///
     /// # Errors
     ///
     /// String / truncation errors per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         if version.at_least(6, 6, 0) {
             return read_v6_6(reader, version);
         }
         read_legacy(reader, version)
     }
-
-    /// Convenience: returns [`Self::name`] decoded as UTF-8 / UTF-16LE
-    /// based on the language's codepage. Returns `None` if the bytes
-    /// don't form valid Unicode.
-    #[must_use]
-    pub fn name_string(&self) -> Option<String> {
-        self.codepage.decode(&self.name)
-    }
-
-    /// Convenience: returns [`Self::language_name`] decoded.
-    #[must_use]
-    pub fn language_name_string(&self) -> Option<String> {
-        self.codepage.decode(&self.language_name)
-    }
 }
 
 /// 6.6.0+ reader: 4 strings, `LanguageID: Word`, no codepage,
-/// `DialogFontBaseScaleHeight/Width`. See
-/// `research-notes/12-format-evolution-audit.md`.
+/// `DialogFontBaseScaleHeight/Width`.
 fn read_v6_6(reader: &mut Reader<'_>, _version: &Version) -> Result<LanguageEntry, Error> {
     let name = read_ansi_bytes(reader, "Language.Name")?;
     let language_name = read_ansi_bytes(reader, "Language.LanguageName")?;
@@ -240,12 +245,8 @@ fn read_v6_6(reader: &mut Reader<'_>, _version: &Version) -> Result<LanguageEntr
     let codepage = LanguageCodepage::Utf16Le;
 
     let dialog_font_size = reader.u32_le("Language.DialogFontSize")?;
-    // New at 6.6.0: BaseScaleHeight + BaseScaleWidth (replaces the
-    // pre-4.1.0 DialogFontStandardHeight; semantically a font scale
-    // reference). Currently surfaced as `dialog_font_standard_height`
-    // for the height field; width is read past pending an accessor.
-    let dialog_font_standard_height = reader.u32_le("Language.DialogFontBaseScaleHeight")?;
-    let _dialog_font_base_scale_width = reader.u32_le("Language.DialogFontBaseScaleWidth")?;
+    let dialog_font_base_scale_height = reader.u32_le("Language.DialogFontBaseScaleHeight")?;
+    let dialog_font_base_scale_width = reader.u32_le("Language.DialogFontBaseScaleWidth")?;
     let welcome_font_size = reader.u32_le("Language.WelcomeFontSize")?;
 
     let right_to_left = reader.u8("Language.RightToLeft")? != 0;
@@ -253,6 +254,7 @@ fn read_v6_6(reader: &mut Reader<'_>, _version: &Version) -> Result<LanguageEntr
     Ok(LanguageEntry {
         name,
         language_name,
+        language_name_utf16: true,
         dialog_font,
         title_font: Vec::new(),
         welcome_font,
@@ -264,7 +266,9 @@ fn read_v6_6(reader: &mut Reader<'_>, _version: &Version) -> Result<LanguageEntr
         language_id,
         codepage,
         dialog_font_size,
-        dialog_font_standard_height,
+        dialog_font_standard_height: 0,
+        dialog_font_base_scale_height,
+        dialog_font_base_scale_width,
         title_font_size: 0,
         welcome_font_size,
         copyright_font_size: 0,
@@ -331,7 +335,9 @@ fn read_legacy(reader: &mut Reader<'_>, version: &Version) -> Result<LanguageEnt
     } else if is_unicode_for_version(version) {
         LanguageCodepage::Utf16Le
     } else {
-        LanguageCodepage::Windows(1252)
+        // Before 4.2.2 the record names no code page: the messages file
+        // was written in its language's, which Windows names by `LANGID`.
+        LanguageCodepage::Windows(default_codepage(language_id))
     };
 
     let dialog_font_size = reader.u32_le("Language.DialogFontSize")?;
@@ -361,6 +367,7 @@ fn read_legacy(reader: &mut Reader<'_>, version: &Version) -> Result<LanguageEnt
     Ok(LanguageEntry {
         name,
         language_name,
+        language_name_utf16: version.at_least(4, 2, 2),
         dialog_font,
         title_font,
         welcome_font,
@@ -373,11 +380,43 @@ fn read_legacy(reader: &mut Reader<'_>, version: &Version) -> Result<LanguageEnt
         codepage,
         dialog_font_size,
         dialog_font_standard_height,
+        dialog_font_base_scale_height: 0,
+        dialog_font_base_scale_width: 0,
         title_font_size,
         welcome_font_size,
         copyright_font_size,
         right_to_left,
     })
+}
+
+/// The ANSI code page Windows uses for a `LANGID` (its
+/// `LOCALE_IDEFAULTANSICODEPAGE`), for the languages Inno Setup's message
+/// files were written in; 1252 for the rest. After innoextract's
+/// `default_codepage_for_language`, with Japanese, which it lacks.
+fn default_codepage(language_id: u32) -> u32 {
+    match language_id & 0xFFFF {
+        // Chinese: Traditional (Taiwan, Hong Kong, Macao), Simplified.
+        0x0404 | 0x0C04 | 0x1404 => 950,
+        0x0804 | 0x1004 => 936,
+        // Serbian, Azeri and Uzbek in Latin script; Cyrillic below.
+        0x081A => 1250,
+        0x042C | 0x0443 => 1254,
+        0x0C1A | 0x082C | 0x0843 => 1251,
+        id => match id & 0x03FF {
+            0x01 | 0x20 | 0x29 => 1256, // Arabic, Urdu, Farsi
+            0x02 | 0x19 | 0x22 | 0x23 | 0x2F | 0x3F | 0x40 | 0x44 | 0x50 => 1251,
+            0x05 | 0x0E | 0x15 | 0x18 | 0x1A | 0x1B | 0x1C | 0x24 => 1250,
+            0x08 => 1253,        // Greek
+            0x0D => 1255,        // Hebrew
+            0x11 => 932,         // Japanese
+            0x12 => 949,         // Korean
+            0x1E => 874,         // Thai
+            0x1F => 1254,        // Turkish
+            0x25..=0x27 => 1257, // Baltic
+            0x2A => 1258,        // Vietnamese
+            _ => 1252,
+        },
+    }
 }
 
 fn decode_utf16le(bytes: &[u8]) -> Option<String> {
@@ -393,6 +432,26 @@ fn decode_utf16le(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn codepage_before_4_2_2_follows_the_language() {
+        for (id, cp) in [
+            (0x0409, 1252),
+            (0x0407, 1252),
+            (0x0419, 1251),
+            (0x0405, 1250),
+            (0x0411, 932),
+            (0x0804, 936),
+            (0x0404, 950),
+            (0x0412, 949),
+            (0x0408, 1253),
+            (0x081A, 1250),
+            (0x0C1A, 1251),
+        ] {
+            assert_eq!(default_codepage(id), cp, "{id:#06x}");
+        }
+    }
+
     use super::*;
     use crate::version::{Version, VersionFlags};
 

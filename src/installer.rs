@@ -13,20 +13,29 @@ use std::{
 
 use pascalscript::Container;
 
+mod setupfiles;
+
+use self::setupfiles::SetupFiles;
+pub use self::setupfiles::WizardImageKind;
+
 use crate::{
     analysis::{exec::ExecIter, registryop::RegistryOpIter, shortcut::ShortcutIter},
     crypto::{
         kdflegacy::{LegacyHashFamily, LegacyStoredHash, legacy_hash_family},
         xchacha20::{SpecialContext, special_nonce},
     },
-    decompress::block::{BlockCompression, decompress_block, decompress_block_with_decryption},
+    decompress::block::{BlockCompression, decompress_block},
     error::Error,
-    extract::{chunk::decompress_chunk, file::FileReader, slice::SliceReader},
+    extract::file::FileReader,
     header::{Architecture, HeaderAnsi, HeaderString, SetupHeader},
+    loader::{
+        marker::{later_layout, read_marker},
+        pe,
+    },
     overlay::{
         OffsetTable,
         offsettable::SetupLdrFamily,
-        pe::{self, OffsetTableLocation},
+        pe::{LocatorMode, OffsetTableLocation},
     },
     records::{
         component::ComponentEntry,
@@ -45,17 +54,20 @@ use crate::{
         task::TaskEntry,
         type_::TypeEntry,
     },
-    util::read::Reader,
-    version::{Variant, Version, read_marker},
+    stream::{chunk::decompress_chunk, slice::SliceReader},
+    util::read::{FromReader, Reader, read_record},
+    version::{Variant, Version},
 };
 
-/// Block-compression method for the setup-0 header block.
+/// How setup-0's blocks (the header and records, and the data entries) are
+/// compressed. setup-1's file chunks have their own method,
+/// [`crate::CompressMethod`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Compression {
     /// Uncompressed.
     Stored,
-    /// Zlib (Deflate). Used by 4.0.9 ≤ version < 4.1.6.
+    /// Zlib (Deflate). Used before 4.1.6.
     Zlib,
     /// LZMA1 with Inno's non-standard 5-byte properties header. Used
     /// by version ≥ 4.1.6.
@@ -83,36 +95,42 @@ impl Compression {
     }
 }
 
-/// Per-installer encryption metadata, parsed from the optional
-/// `TSetupEncryptionHeader` that precedes the compressed block in
-/// 6.4.0+ installers. Older installers store encryption metadata
-/// per-chunk.
+/// The installer's PBKDF2 / XChaCha20 password and encryption parameters
+/// (6.4.0+). From 6.5.0 they are the `TSetupEncryptionHeader` that precedes
+/// setup-0's blocks; in 6.4.x they sit in the header tail and this crate
+/// gathers them here when the header's `Password` option is set. Older
+/// installers use the legacy hashes in [`crate::HeaderTail`].
 #[derive(Clone, Debug)]
 pub struct EncryptionInfo {
-    /// `EncryptionUse` from `Shared.Struct.pas:108-114`.
+    /// `EncryptionUse`: what is encrypted (6.5.0+; in 6.4.x
+    /// [`EncryptionMode::Files`] when `Encryption=yes`, else
+    /// [`EncryptionMode::None`]).
     pub mode: EncryptionMode,
-    /// PBKDF2-SHA256 salt.
+    /// `KDFSalt`: the PBKDF2-HMAC-SHA256 salt.
     pub salt: [u8; 16],
-    /// PBKDF2 iteration count (variable; default `220_000`).
+    /// `KDFIterations`: PBKDF2 iterations, 220 000 by default.
     pub kdf_iterations: u32,
-    /// XChaCha20 base nonce.
+    /// `BaseNonce`: the XChaCha20 nonce each chunk's nonce is derived
+    /// from.
     pub base_nonce: [u8; 24],
-    /// Password verifier value (compared against XChaCha20-of-zero
-    /// after key derivation).
+    /// `PasswordTest`: what the right password's key encrypts four zero
+    /// bytes to, under a nonce of its own; how a password is checked
+    /// without decrypting anything.
     pub password_test: u32,
 }
 
-/// Whether (and how) the installer is encrypted.
+/// `EncryptionUse` (`Encryption=`): what the installer encrypts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EncryptionMode {
-    /// `euNone`: no encryption.
+    /// `euNone` (`Encryption=no`): nothing; a `Password=` is only asked
+    /// for.
     None,
-    /// `euFiles`: only file payload chunks are encrypted; setup-0
-    /// remains plaintext.
+    /// `euFiles` (`Encryption=yes`): file chunks are encrypted, setup-0 is
+    /// not.
     Files,
-    /// `euFull` (6.5+): the entire setup-0 stream after the
-    /// encryption header is XChaCha20-encrypted.
+    /// `euFull` (`Encryption=full`, 6.5.0+): setup-0 is encrypted too, so
+    /// nothing past the version can be read without the password.
     Full,
 }
 
@@ -148,17 +166,16 @@ pub struct InnoInstaller<'a> {
     encryption: Option<EncryptionInfo>,
     compression: Compression,
     /// Decompressed setup-0 bytes. Empty when the block is encrypted
-    /// with `euFull` and no key is available, or when the installer
-    /// pre-dates the 4.0.9 block-header layout.
+    /// with `euFull` and no key is available.
     decompressed_setup0: Box<[u8]>,
     /// Decompressed bytes of the second block stream that
     /// immediately follows the first one in `setup-0`. Holds the
     /// `TSetupFileLocationEntry` records (one per slot in
     /// `EntryCounts.file_locations`). Empty when no second block is
-    /// present (older versions, or when the first block was skipped).
+    /// present (when the first block was skipped).
     decompressed_data_block: Box<[u8]>,
     /// Parsed header. `None` when `decompressed_setup0` is empty
-    /// (`euFull`-encrypted or pre-4.0.9 layout).
+    /// (`euFull`-encrypted without a key).
     header: Option<SetupHeader>,
     /// Parsed typed records (`TSetupFileEntry`,
     /// `TSetupLanguageEntry`, etc.). Empty when `header` is `None`.
@@ -171,6 +188,9 @@ pub struct InnoInstaller<'a> {
     chunk_cache: Box<[OnceLock<Arc<[u8]>>]>,
     /// Map: `file_locations` index → `chunk_cache` index.
     file_loc_to_chunk: Box<[u32]>,
+    /// Per `chunk_cache` slot: how far its furthest file reaches, the
+    /// most of the chunk worth decompressing.
+    chunk_needed: Box<[u64]>,
     /// Derived 32-byte XChaCha20 key for 6.4+ encrypted installers
     /// when a candidate password matched the on-disk verifier.
     /// `None` for unencrypted installers, for legacy (pre-6.4)
@@ -188,6 +208,8 @@ pub struct InnoInstaller<'a> {
     /// produced [`Self::encryption_key`] / [`Self::legacy_password`].
     /// Reported to callers via [`Self::password_used`].
     password_used: Option<String>,
+    /// The slice files the caller supplied ([`Self::with_slices`]).
+    slices: Vec<&'a [u8]>,
 }
 
 /// Eagerly-parsed record sections - every record type stored in
@@ -212,6 +234,8 @@ struct ParsedRecords {
     uninstall_run: Vec<RunEntry>,
     /// Block-2 file-location records.
     file_locations: Vec<DataEntry>,
+    /// Where the wizard images and DLLs sit in the records block.
+    setup_files: SetupFiles,
 }
 
 impl<'a> InnoInstaller<'a> {
@@ -237,11 +261,19 @@ impl<'a> InnoInstaller<'a> {
     /// (`password_test`); the first match is recorded and used to
     /// decrypt file chunks during [`Self::extract`].
     ///
+    /// The candidates are tried only when the installer has a password
+    /// (the header's [`crate::HeaderOption::Password`], set for every
+    /// encrypted installer and for a password-only one). An installer
+    /// without one parses exactly as [`Self::from_bytes`] would, with
+    /// [`Self::password_used`] `None`, so one candidate list can be passed
+    /// for every input.
+    ///
     /// # Errors
     ///
-    /// - [`Error::PasswordRequired`] - installer is encrypted but
+    /// - [`Error::PasswordRequired`] - installer has a password but
     ///   `passwords` is empty.
-    /// - [`Error::WrongPassword`] - no candidate matched.
+    /// - [`Error::WrongPassword`] - installer has a password and no
+    ///   candidate matched.
     /// - All standard parse errors per [`Self::from_bytes`].
     pub fn from_bytes_with_passwords(data: &'a [u8], passwords: &[&str]) -> Result<Self, Error> {
         Self::parse(data, Some(passwords))
@@ -260,9 +292,9 @@ impl<'a> InnoInstaller<'a> {
             what: "setup-0 region",
         })?;
 
-        let (version, variant) = read_marker(setup0)?;
+        let (version, variant, marker_len) = read_marker(setup0)?;
 
-        // Whatever follows the 64-byte SetupID depends on version.
+        // Whatever follows the SetupID depends on version.
         //
         // - 6.5.0+: an unconditional 4-byte CRC32 + 49-byte
         //   `TSetupEncryptionHeader` precedes the compressed block.
@@ -272,7 +304,7 @@ impl<'a> InnoInstaller<'a> {
         //   compressed `TSetupHeader` struct. We can't surface it
         //   until the block is decompressed.
         // - pre-6.4: per-chunk encryption.
-        let mut after_marker = Reader::at(setup0, 64)?;
+        let mut after_marker = Reader::at(setup0, marker_len)?;
         let encryption = if version.at_least(6, 5, 0) {
             parse_encryption_header(&mut after_marker)?
         } else {
@@ -307,9 +339,9 @@ impl<'a> InnoInstaller<'a> {
             password_used = used;
         }
 
-        // Decompress the setup-0 block streams. Three paths:
-        //   - pre-4.0.9: skipped (older block-header layout we
-        //     don't yet support).
+        // Decompress the setup-0 block streams. Two paths (the
+        // block header itself differs before 4.0.9 and from 6.7.0,
+        // which `decompress_block` handles):
         //   - euFull (6.5+) WITH a derived key: decrypt block 1
         //     with `sccCompressedBlocks1`, run decompress_block,
         //     then decrypt block 2 with `sccCompressedBlocks2`,
@@ -317,62 +349,64 @@ impl<'a> InnoInstaller<'a> {
         //   - plaintext OR euFull-without-key: read both blocks
         //     directly (or skip when encrypted-without-key).
         //
-        // The two-block layout matches
-        // `research-notes/05-streams-and-compression.md` §"Two-
-        // block layout"; per-chunk decryption in setup-1 fires
-        // independently in `extract::chunk`.
-        let (decompressed_setup0, decompressed_data_block, compression) =
-            if !version.at_least(4, 0, 9) {
+        // Block 1 holds the header and records, block 2 the data
+        // entries; per-chunk decryption in setup-1 happens
+        // independently in `stream::chunk`.
+        let (decompressed_setup0, decompressed_data_block, compression) = if block_is_encrypted {
+            if let (Some(info), Some(key)) = (encryption.as_ref(), encryption_key.as_ref()) {
+                decompress_blocks_eufull(
+                    setup0,
+                    block_start_in_setup0,
+                    &version,
+                    &info.base_nonce,
+                    key,
+                )?
+            } else {
+                // Encrypted but no key supplied (caller went
+                // through `from_bytes` or `from_bytes_with_passwords`
+                // for an encrypted installer - the plain
+                // `from_bytes` path lands here for euFull).
                 (
                     Box::<[u8]>::default(),
                     Box::<[u8]>::default(),
                     Compression::Unknown,
                 )
-            } else if block_is_encrypted {
-                if let (Some(info), Some(key)) = (encryption.as_ref(), encryption_key.as_ref()) {
-                    decompress_blocks_eufull(
-                        setup0,
-                        block_start_in_setup0,
-                        &version,
-                        &info.base_nonce,
-                        key,
-                    )?
-                } else {
-                    // Encrypted but no key supplied (caller went
-                    // through `from_bytes` or `from_bytes_with_passwords`
-                    // for an encrypted installer - the plain
-                    // `from_bytes` path lands here for euFull).
-                    (
-                        Box::<[u8]>::default(),
-                        Box::<[u8]>::default(),
-                        Compression::Unknown,
-                    )
-                }
-            } else {
-                let block1 = decompress_block(setup0, block_start_in_setup0, &version)?;
-                let comp = Compression::from_block(block1.compression);
-                let block2_start =
-                    block_start_in_setup0
-                        .checked_add(block1.consumed)
-                        .ok_or(Error::Overflow {
-                            what: "second block start",
-                        })?;
-                let block2 = decompress_block(setup0, block2_start, &version)?;
-                (block1.bytes, block2.bytes, comp)
-            };
-
-        let header = if decompressed_setup0.is_empty() {
-            None
+            }
         } else {
-            Some(SetupHeader::parse(&decompressed_setup0, &version)?)
+            let block1 = decompress_block(setup0, block_start_in_setup0, &version)?;
+            let comp = Compression::from_block(block1.compression);
+            let block2_start =
+                block_start_in_setup0
+                    .checked_add(block1.consumed)
+                    .ok_or(Error::Overflow {
+                        what: "second block start",
+                    })?;
+            let block2 = decompress_block(setup0, block2_start, &version)?;
+            (block1.bytes, block2.bytes, comp)
         };
 
-        let records = match header.as_ref() {
-            Some(h) => parse_records(&decompressed_setup0, &decompressed_data_block, h, &version)?,
-            None => ParsedRecords::default(),
+        // A few releases changed the records but kept the SetupID; an
+        // installer that does not parse under its marker's layout is tried
+        // under the later one, which `version()` then reports.
+        let (header, records, version) = if decompressed_setup0.is_empty() {
+            (None, ParsedRecords::default(), version)
+        } else {
+            match parse_setup0(&decompressed_setup0, &decompressed_data_block, &version) {
+                Ok((h, r)) => (Some(h), r, version),
+                Err(first) => {
+                    let Some(later) = later_layout(&version) else {
+                        return Err(first);
+                    };
+                    match parse_setup0(&decompressed_setup0, &decompressed_data_block, &later) {
+                        Ok((h, r)) => (Some(h), r, later),
+                        Err(_) => return Err(first),
+                    }
+                }
+            }
         };
 
-        let (chunk_cache, file_loc_to_chunk) = build_chunk_index(&records.file_locations);
+        let (chunk_cache, file_loc_to_chunk, chunk_needed) =
+            build_chunk_index(&records.file_locations);
 
         // 6.4.x promotion. Encryption metadata for 6.4.0..6.5.0 lives
         // inline in `HeaderTail`. Promote it to an `EncryptionInfo`
@@ -405,15 +439,21 @@ impl<'a> InnoInstaller<'a> {
                 });
             }
         }
-        // Run the modern (PBKDF2 + XChaCha20) password trial whenever
-        // an `EncryptionInfo` is in scope and we haven't unlocked
-        // already. This covers 6.5+ password-only installers (mode=None
-        // with the verifier populated), 6.4.x with EncryptionUsed
-        // (mode=Files via the promotion above), and 6.4.x password-only
-        // (mode=None via the promotion above).
+        // Run the modern (PBKDF2 + XChaCha20) password trial when the
+        // installer has a password and we haven't unlocked already. This
+        // covers 6.5+ password-only installers (mode=None with the
+        // verifier populated), 6.4.x with EncryptionUsed (mode=Files via
+        // the promotion above), and 6.4.x password-only (mode=None via
+        // the promotion above). Every 6.5+ installer carries an
+        // `EncryptionInfo`, password or not, so its presence says nothing:
+        // like Setup (`Setup.MainFunc.pas`, `shPassword in
+        // SetupHeader.Options`), only the header's `Password` option does.
         if let Some(candidates) = passwords
             && encryption_key.is_none()
             && let Some(info) = encryption.as_ref()
+            && header
+                .as_ref()
+                .is_some_and(|h| h.has_option(crate::HeaderOption::Password))
         {
             if candidates.is_empty() {
                 return Err(Error::PasswordRequired);
@@ -458,15 +498,16 @@ impl<'a> InnoInstaller<'a> {
             records,
             chunk_cache,
             file_loc_to_chunk,
+            chunk_needed,
             encryption_key,
             legacy_password,
             password_used,
+            slices: Vec::new(),
         })
     }
 
     /// Returns the decompressed setup-0 bytes. Empty when the block
-    /// could not be decompressed (encrypted-`euFull`, or older
-    /// pre-4.0.9 layout pending full support).
+    /// could not be decrypted (`euFull` without a key).
     #[must_use]
     pub fn decompressed_setup0(&self) -> &[u8] {
         &self.decompressed_setup0
@@ -487,7 +528,12 @@ impl<'a> InnoInstaller<'a> {
         self.header.as_ref()
     }
 
-    /// Returns the parsed Inno Setup version.
+    /// Returns the setup data version: the one the installer's SetupID
+    /// marker names, except under a marker a later release kept writing
+    /// after it changed the records (`(1.3.21)`, `(2.0.1)`, `(3.0.3)`,
+    /// `(4.2.3)`), where it is the version whose layout the records parsed
+    /// with, e.g. 4.2.4 for a 4.2.4 installer. [`Version::marker_str`]
+    /// keeps the marker as written.
     #[must_use]
     pub fn version(&self) -> &Version {
         &self.version
@@ -514,20 +560,21 @@ impl<'a> InnoInstaller<'a> {
     /// Returns whether the offset table was found via PE resource
     /// (5.1.5+) or the legacy `0x30` file-offset path.
     #[must_use]
-    pub fn pe_locator_mode(&self) -> pe::LocatorMode {
+    pub fn pe_locator_mode(&self) -> LocatorMode {
         self.pe_location.mode
     }
 
-    /// Returns the encryption metadata for 6.4.0+ installers, or
-    /// `None` if not encrypted (or if the version is older than 6.4 -
-    /// pre-6.4 encryption is per-chunk, surfaced through the
-    /// `DataEntry::ChunkEncrypted` flag on each affected chunk).
+    /// The PBKDF2 / XChaCha20 parameters (6.4.0+): from 6.5.0 always, in
+    /// 6.4.x when the installer has a password. `None` before 6.4.0, whose
+    /// password hashes are in [`crate::HeaderTail`]; which chunks are
+    /// encrypted is each data entry's [`crate::records::dataentry::DataFlag::ChunkEncrypted`].
     #[must_use]
     pub fn encryption(&self) -> Option<&EncryptionInfo> {
         self.encryption.as_ref()
     }
 
-    /// Block-compression method for the setup-0 header block.
+    /// How setup-0's blocks are compressed; [`Compression::Unknown`] when
+    /// they could not be read (an `euFull` installer without the password).
     #[must_use]
     pub fn compression(&self) -> Compression {
         self.compression
@@ -592,8 +639,10 @@ impl<'a> InnoInstaller<'a> {
     /// These header text fields are length-prefixed setup-header blobs;
     /// current supported Inno Setup formats do not carry a per-field
     /// checksum for `LicenseText`, `InfoBeforeText`, or `InfoAfterText`.
-    /// Integrity validation is therefore limited to successful setup-0
-    /// decompression and structural parsing.
+    /// Integrity validation is therefore limited to what covers the whole
+    /// setup-0 block: a CRC-32 over every 4 KiB of it as stored, checked
+    /// when it is read, then decompression and parsing to the block's last
+    /// byte.
     #[must_use]
     pub fn license_text(&self) -> Option<&[u8]> {
         self.header
@@ -793,6 +842,147 @@ impl<'a> InnoInstaller<'a> {
         &self.records.file_locations
     }
 
+    /// The wizard's pictures of `kind`, as stored (BMP, or PNG from 6.5.2),
+    /// for light mode: one large image (and from 2.0.0 one small one) before
+    /// 5.6.0, from 5.6.0 any number, in the sizes the script lists for
+    /// Setup to pick the closest to its DPI from. Empty when the installer
+    /// has none of the kind, and when setup-0 could not be decrypted.
+    #[must_use]
+    pub fn wizard_images(&self, kind: WizardImageKind) -> Vec<&[u8]> {
+        self.slices(self.records.setup_files.images(kind))
+    }
+
+    /// The wizard's dark-mode pictures of `kind` (6.6.0+), or `None` when
+    /// the installer has none of its own and uses the light ones
+    /// ([`Self::wizard_images`]).
+    #[must_use]
+    pub fn wizard_images_dark(&self, kind: WizardImageKind) -> Option<Vec<&[u8]>> {
+        self.records
+            .setup_files
+            .dark_images(kind)
+            .map(|ranges| self.slices(ranges))
+    }
+
+    /// The decompressor DLL Setup extracts and loads to decompress the
+    /// files (`isbunzip.dll`, `isunzlib.dll`, before 4.1.6 also
+    /// `isunlzma.dll`): stored for bzip2 compression, in 4.1.5 for LZMA,
+    /// and from 4.2.6 for zip.
+    #[must_use]
+    pub fn decompressor_dll(&self) -> Option<&[u8]> {
+        self.slice(self.records.setup_files.decompressor_dll())
+    }
+
+    /// The decryption DLL (`ISCrypt.dll`) Setup loads to decrypt the files
+    /// of an encrypted installer from 4.2.2 to 6.4.0; later releases
+    /// decrypt without one.
+    #[must_use]
+    pub fn decryption_dll(&self) -> Option<&[u8]> {
+        self.slice(self.records.setup_files.decryption_dll())
+    }
+
+    /// The 7-Zip library Setup loads to extract archives (6.5.0+), stored
+    /// when the script names one ([`HeaderString::SevenZipLibraryName`]).
+    #[must_use]
+    pub fn seven_zip_dll(&self) -> Option<&[u8]> {
+        self.slice(self.records.setup_files.seven_zip_dll())
+    }
+
+    fn slice(&self, range: Option<std::ops::Range<usize>>) -> Option<&[u8]> {
+        range.and_then(|r| self.decompressed_setup0.get(r))
+    }
+
+    fn slices(&self, ranges: &[std::ops::Range<usize>]) -> Vec<&[u8]> {
+        ranges
+            .iter()
+            .filter_map(|r| self.decompressed_setup0.get(r.clone()))
+            .collect()
+    }
+
+    /// Whether the files are in slice files beside the installer
+    /// (`DiskSpanning=yes`) rather than embedded in it: then
+    /// [`Self::extract`] needs them, through [`Self::with_slices`].
+    #[must_use]
+    pub fn uses_slice_files(&self) -> bool {
+        self.offset_table.offset_setup1 == 0 && !self.records.file_locations.is_empty()
+    }
+
+    /// How many slice files the data entries name (the highest
+    /// `last_slice`, plus one); 0 when the files are embedded.
+    #[must_use]
+    pub fn slice_count(&self) -> u32 {
+        if !self.uses_slice_files() {
+            return 0;
+        }
+        self.records
+            .file_locations
+            .iter()
+            .map(|d| d.last_slice.saturating_add(1))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The file name Setup looks for slice `slice` (0-based) under, for an
+    /// installer named `installer_name` (`mysetup.exe`). By release
+    /// (issrc `FindDisk` / `FindSliceFilename`):
+    ///
+    /// - before 2.0: `<BaseFilename>.<disk>` (`setup.1`), the header's
+    ///   [`HeaderString::BaseFilename`];
+    /// - 2.0 to 4.x: `<BaseFilename>-<disk>.bin`;
+    /// - from 5.0: the installer's own name without its extension,
+    ///   `<name>-<disk>.bin`.
+    ///
+    /// From 4.0, with more than one slice per disk
+    /// ([`crate::HeaderTail::slices_per_disk`]), a letter follows the disk:
+    /// `-1a.bin`, `-1b.bin`, `-2a.bin`.
+    #[must_use]
+    pub fn slice_file_name(&self, slice: u32, installer_name: &str) -> String {
+        let per_disk = self
+            .header
+            .as_ref()
+            .map_or(1, |h| h.tail().slices_per_disk)
+            .max(1);
+        let disk = slice.checked_div(per_disk).unwrap_or(0).saturating_add(1);
+        let letter = slice.checked_rem(per_disk).unwrap_or(0);
+        let base_filename = || {
+            self.header
+                .as_ref()
+                .and_then(|h| h.string(HeaderString::BaseFilename))
+                .unwrap_or("setup")
+                .to_owned()
+        };
+        if !self.version.at_least(2, 0, 0) {
+            return format!("{}.{disk}", base_filename());
+        }
+        let prefix = if self.version.at_least(5, 0, 0) {
+            match installer_name.rsplit_once('.') {
+                Some((stem, _)) => stem.to_owned(),
+                None => installer_name.to_owned(),
+            }
+        } else {
+            base_filename()
+        };
+        if per_disk == 1 {
+            format!("{prefix}-{disk}.bin")
+        } else {
+            let letter = char::from_u32(u32::from('a').saturating_add(letter)).unwrap_or('a');
+            format!("{prefix}-{disk}{letter}.bin")
+        }
+    }
+
+    /// Supplies the slice files of a disk-spanning installer, in order
+    /// (slice 0 first; see [`Self::slice_file_name`]), for extraction.
+    /// Each is checked: the slice ID the release writes, and the total size
+    /// its header states.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadSlice`] for a slice that is not one.
+    pub fn with_slices(mut self, slices: &[&'a [u8]]) -> Result<Self, Error> {
+        SliceReader::new(&[], 0, slices, &self.version)?;
+        self.slices = slices.to_vec();
+        Ok(self)
+    }
+
     /// Returns the file-location record referenced by a file entry.
     #[must_use]
     pub fn file_location_for(&self, file: &FileEntry) -> Option<&DataEntry> {
@@ -814,12 +1004,9 @@ impl<'a> InnoInstaller<'a> {
         ExecIter::new(self.run_entries(), self.uninstall_runs())
     }
 
-    /// Iterates `[Registry]` entries with each one classified as
-    /// [`crate::analysis::RegistryOpKind::Write`],
-    /// [`WriteIfMissing`](crate::analysis::RegistryOpKind::WriteIfMissing),
-    /// [`DeleteValue`](crate::analysis::RegistryOpKind::DeleteValue),
-    /// or [`DeleteKey`](crate::analysis::RegistryOpKind::DeleteKey)
-    /// based on the entry's flag bitset.
+    /// Iterates `[Registry]` entries, each with the
+    /// [`crate::analysis::RegistryOpKind`] Setup carries out for it at
+    /// install time, from its flags and value type.
     ///
     /// Uninstall-time effects are not classified here - inspect
     /// the underlying entry's `flags` for `UninsDeleteValue`,
@@ -839,9 +1026,12 @@ impl<'a> InnoInstaller<'a> {
         ShortcutIter::new(self.icons(), self.files())
     }
 
-    /// Returns `true` when the installer carries any kind of
-    /// encryption - modern (6.4+ XChaCha20) or legacy (pre-6.4
-    /// ARC4-via-`shPassword` flag).
+    /// Whether the installer's data is encrypted: file chunks (and from
+    /// 6.5.0 possibly setup-0 itself; [`EncryptionMode`]) under XChaCha20 from
+    /// 6.4.0, or under ARC4 before (`Encryption=yes`, the header's
+    /// [`crate::HeaderOption::EncryptionUsed`], 4.2.2+). Extracting such a
+    /// file needs the password. An installer that only asks for a password
+    /// is not encrypted; see [`Self::has_password`].
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
         match self.encryption.as_ref().map(|e| e.mode) {
@@ -849,8 +1039,22 @@ impl<'a> InnoInstaller<'a> {
             _ => self
                 .header
                 .as_ref()
-                .is_some_and(|h| h.has_option(crate::HeaderOption::Password)),
+                .is_some_and(|h| h.has_option(crate::HeaderOption::EncryptionUsed)),
         }
+    }
+
+    /// Whether Setup asks for a password (`Password=`, the header's
+    /// [`crate::HeaderOption::Password`]), with or without encrypting
+    /// anything. Every encrypted installer has one. For an `euFull`
+    /// installer opened without the password the header cannot be read;
+    /// this is then true by its encryption alone.
+    #[must_use]
+    pub fn has_password(&self) -> bool {
+        self.is_encrypted()
+            || self
+                .header
+                .as_ref()
+                .is_some_and(|h| h.has_option(crate::HeaderOption::Password))
     }
 
     /// Returns the password (verbatim from the candidate list
@@ -897,7 +1101,7 @@ impl<'a> InnoInstaller<'a> {
                 what: "file_locations index",
             })?;
         let chunk_bytes = self.chunk_bytes_for(location_index)?;
-        FileReader::new(chunk_bytes, data, &self.version)
+        crate::stream::file::open(chunk_bytes, data, &self.version)
     }
 
     /// Eager convenience: drains the streaming reader into a
@@ -917,11 +1121,17 @@ impl<'a> InnoInstaller<'a> {
         Ok(out)
     }
 
-    /// Reconstructs the embedded uninstaller (`unins000.exe`) by
-    /// duplicating the input bytes and patching the
-    /// `SetupExeMode` slot to the uninstaller magic.
+    /// Reconstructs the uninstaller (`unins000.exe`): from 5.0.0 by
+    /// duplicating the input bytes and patching the `SetupExeMode` slot to
+    /// the uninstaller magic, before 5.0.0 by extracting it.
     ///
-    /// Inno's uninstaller stub isn't a separately-packaged file in
+    /// Before 5.0.0 the uninstaller is a program of its own, `Uninst.e32`,
+    /// which the compiler stores like any other file under the `[Files]`
+    /// entry of type [`FileEntryType::UninstExe`] (issrc-4.0.8
+    /// `Install.pas`); this returns its bytes, which
+    /// [`Self::extract_files`] yields too.
+    ///
+    /// From 5.0.0 the uninstaller stub isn't a separately-packaged file in
     /// the chunk stream - at install time `Setup.exe` copies its
     /// own bytes (`NewParamStr(0)` in
     /// `Setup.Install.pas:1629-1631`) and overwrites the four-byte
@@ -946,6 +1156,21 @@ impl<'a> InnoInstaller<'a> {
     /// "Are you sure you want to uninstall…?" prompts the way an
     /// installed-and-bound copy would.
     ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// let bytes = std::fs::read("setup.exe")?;
+    /// let inst = innospect::InnoInstaller::from_bytes(&bytes)?;
+    /// let uninstaller = inst.extract_uninstaller()?;
+    /// if inst.version().at_least(5, 0, 0) {
+    ///     // The installer itself, with its mode slot marked `InUn`.
+    ///     assert_eq!(uninstaller.len(), bytes.len());
+    ///     assert_eq!(&uninstaller[0x30..0x34], b"InUn");
+    /// }
+    /// std::fs::write("unins000.exe", &uninstaller)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
     /// # Errors
     ///
     /// - [`Error::NoLocation`] when the installer ships no
@@ -953,13 +1178,18 @@ impl<'a> InnoInstaller<'a> {
     ///   installers without an `ftUninstExe` `[Files]` entry).
     /// - [`Error::Truncated`] when the input is too short to
     ///   contain the mode marker at offset `0x30`.
+    /// - Before 5.0.0, whatever extracting the file returns (see
+    ///   [`Self::extract_to_vec`]).
     pub fn extract_uninstaller(&self) -> Result<Vec<u8>, Error> {
-        if !self
+        let Some(uninstaller) = self
             .files()
             .iter()
-            .any(|f| f.file_type == Some(FileEntryType::UninstExe))
-        {
+            .find(|f| f.file_type == Some(FileEntryType::UninstExe))
+        else {
             return Err(Error::NoLocation);
+        };
+        if !self.version.at_least(5, 0, 0) {
+            return self.extract_to_vec(uninstaller);
         }
         const MODE_OFFSET: usize = 0x30;
         const MODE_UNINSTALLER: u32 = 0x6E55_6E49;
@@ -1002,20 +1232,19 @@ impl<'a> InnoInstaller<'a> {
     /// base nonce, or password) for chunk decryption, or `None`
     /// for plaintext installers / installers that haven't been
     /// unlocked.
-    fn encryption_context(&self) -> Option<crate::extract::chunk::EncryptionContext<'_>> {
+    fn encryption_context(&self) -> Option<crate::stream::chunk::EncryptionContext<'_>> {
         // Modern (6.4+) - derived 32-byte key + base nonce.
         if let (Some(key), Some(info)) = (self.encryption_key.as_ref(), self.encryption.as_ref()) {
-            return Some(crate::extract::chunk::EncryptionContext::Modern {
+            return Some(crate::stream::chunk::EncryptionContext::Modern {
                 key,
                 base_nonce: &info.base_nonce,
-                mode: info.mode,
             });
         }
         // Legacy (pre-6.4) - keep the password verbatim (per-chunk
         // RC4 keys are derived from password + each chunk's salt).
         // 5.3.9..6.4 uses SHA-1 keying; pre-5.3.9 uses MD5.
         if let Some(password) = self.legacy_password.as_deref() {
-            return Some(crate::extract::chunk::EncryptionContext::Legacy {
+            return Some(crate::stream::chunk::EncryptionContext::Legacy {
                 password,
                 use_sha1: self.version.at_least(5, 3, 9),
                 unicode: crate::util::encoding::is_unicode_for_version(&self.version),
@@ -1052,19 +1281,26 @@ impl<'a> InnoInstaller<'a> {
             .ok_or(Error::Truncated {
                 what: "file_locations index",
             })?;
-        let compression = self
-            .header
-            .as_ref()
-            .and_then(|h| h.tail().compress_method)
-            .ok_or(Error::Truncated {
-                what: "header compression method",
-            })?;
-        let slice = SliceReader::embedded(self.input, self.offset_table.offset_setup1)?;
+        let header = self.header.as_ref().ok_or(Error::Truncated {
+            what: "setup header",
+        })?;
+        let slice = SliceReader::new(
+            self.input,
+            self.offset_table.offset_setup1,
+            &self.slices,
+            &self.version,
+        )?;
+        let needed = self
+            .chunk_needed
+            .get(chunk_id as usize)
+            .copied()
+            .unwrap_or(u64::MAX);
         let bytes = decompress_chunk(
             &slice,
             data,
-            compression,
+            header.tail(),
             self.encryption_context().as_ref(),
+            needed,
         )?;
         // If another thread raced ahead, `set` will fail - fall
         // back to whatever value got installed.
@@ -1084,8 +1320,8 @@ impl<'a> InnoInstaller<'a> {
 /// returns the derived 32-byte key plus the matching password on
 /// success.
 ///
-/// The verifier check follows the canonical Pascal `TestPassword`
-/// algorithm (`research-notes/08-issrc-encryption.md` §C):
+/// The verifier check follows upstream's `TestPassword`
+/// (issrc `Projects/Src/Shared.EncryptionFunc.pas`):
 ///
 /// 1. Derive the 32-byte key via PBKDF2-HMAC-SHA256 with the
 ///    UTF-16LE-encoded password, the `KDFSalt`, and `KDFIterations`.
@@ -1108,17 +1344,26 @@ fn try_passwords(
     passwords: &[&str],
     version: &Version,
 ) -> Result<(Option<[u8; 32]>, Option<String>), Error> {
-    let derive: fn(&str, &[u8; 16], u32) -> [u8; 32] =
-        if (version.a, version.b, version.c, version.d) == (7, 0, 0, 1) {
-            crate::crypto::pbkdf2::derive_key_buggy_700_preview3
-        } else {
-            crate::crypto::pbkdf2::derive_key
-        };
+    // SetupID 7.0.0.1 is written by 7.0.0 preview 2 (`is-7_0_0_1`), whose
+    // PBKDF2 is standard, and preview 3 (`is-7_0_0_2`), whose PBKDF2 drops
+    // the first block's first term (issrc `f4fc1daf`, fixed by `90f06e4d`
+    // before 7.0.0, which writes 7.0.0.3). Nothing stored tells the two
+    // apart, so under that marker both are tried, and the verifier decides.
+    type Derive = fn(&str, &[u8; 16], u32) -> [u8; 32];
+    let standard: Derive = crate::crypto::pbkdf2::derive_key;
+    let preview3: Derive = crate::crypto::pbkdf2::derive_key_buggy_700_preview3;
+    let derivations: &[Derive] = if (version.a, version.b, version.c, version.d) == (7, 0, 0, 1) {
+        &[standard, preview3]
+    } else {
+        &[standard]
+    };
     for &password in passwords {
-        let key = derive(password, &info.salt, info.kdf_iterations);
-        let actual = crate::crypto::xchacha20::password_test_verifier(&key, &info.base_nonce);
-        if actual == info.password_test {
-            return Ok((Some(key), Some(password.to_owned())));
+        for derive in derivations {
+            let key = derive(password, &info.salt, info.kdf_iterations);
+            let actual = crate::crypto::xchacha20::password_test_verifier(&key, &info.base_nonce);
+            if actual == info.password_test {
+                return Ok((Some(key), Some(password.to_owned())));
+            }
         }
     }
     Err(Error::WrongPassword)
@@ -1127,9 +1372,8 @@ fn try_passwords(
 /// `euFull` (6.5+) decryption + decompression of the two setup-0
 /// block streams.
 ///
-/// Wire format per `research-notes/08-issrc-encryption.md` and
-/// the Pascal `TCompressedBlockWriter.FlushOutputBuffer`
-/// implementation:
+/// Wire format per upstream's `TCompressedBlockWriter.FlushOutputBuffer`
+/// (issrc `Projects/Src/Compression.Base.pas`):
 ///
 /// ```text
 /// [outer header: plaintext CRC + StoredSize + flag]
@@ -1154,7 +1398,8 @@ fn decompress_blocks_eufull(
     key: &[u8; 32],
 ) -> Result<DecryptedBlocks, Error> {
     let nonce1 = special_nonce(base_nonce, SpecialContext::CompressedBlocks1);
-    let block1 = decompress_block_with_decryption(setup0, block_start, version, key, &nonce1)?;
+    let block1 =
+        crate::stream::block::decompress(setup0, block_start, version, Some((key, &nonce1)))?;
     let comp = Compression::from_block(block1.compression);
 
     let block2_start = block_start
@@ -1163,7 +1408,8 @@ fn decompress_blocks_eufull(
             what: "second block start",
         })?;
     let nonce2 = special_nonce(base_nonce, SpecialContext::CompressedBlocks2);
-    let block2 = decompress_block_with_decryption(setup0, block2_start, version, key, &nonce2)?;
+    let block2 =
+        crate::stream::block::decompress(setup0, block2_start, version, Some((key, &nonce2)))?;
 
     Ok((block1.bytes, block2.bytes, comp))
 }
@@ -1256,21 +1502,24 @@ fn try_passwords_legacy(
     Err(Error::WrongPassword)
 }
 
-/// `(chunk_cache, file_loc_to_chunk)` - return type of
+/// `(chunk_cache, file_loc_to_chunk, chunk_needed)` - return type of
 /// [`build_chunk_index`]. Aliased here for clippy.
-type ChunkIndex = (Box<[OnceLock<Arc<[u8]>>]>, Box<[u32]>);
+type ChunkIndex = (Box<[OnceLock<Arc<[u8]>>]>, Box<[u32]>, Box<[u64]>);
 
 /// Group `file_locations` by their `(first_slice, start_offset)`
 /// chunk key, returning:
 ///   - `chunk_cache`: one empty `OnceLock` slot per unique chunk.
 ///   - `file_loc_to_chunk`: parallel array mapping each file-loc
 ///     index to its chunk slot index.
+///   - `chunk_needed`: per slot, how far into the decompressed chunk its
+///     furthest file reaches.
 fn build_chunk_index(file_locations: &[DataEntry]) -> ChunkIndex {
     // (first_slice, start_offset) → chunk slot index.
-    let mut keys: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut keys: HashMap<(u32, u64), u32> = HashMap::new();
     let mut next_id: u32 = 0;
     let mut mapping: Vec<u32> = Vec::with_capacity(file_locations.len());
 
+    let mut needed: Vec<u64> = Vec::new();
     for d in file_locations {
         let key = (d.first_slice, d.start_offset);
         let id = *keys.entry(key).or_insert_with(|| {
@@ -1279,6 +1528,14 @@ fn build_chunk_index(file_locations: &[DataEntry]) -> ChunkIndex {
             id
         });
         mapping.push(id);
+        let reach = d.chunk_sub_offset.saturating_add(d.original_size);
+        let slot = usize::try_from(id).unwrap_or(usize::MAX);
+        if needed.len() <= slot {
+            needed.resize(slot.saturating_add(1), 0);
+        }
+        if let Some(n) = needed.get_mut(slot) {
+            *n = (*n).max(reach);
+        }
     }
 
     let cache_len = next_id as usize;
@@ -1287,7 +1544,23 @@ fn build_chunk_index(file_locations: &[DataEntry]) -> ChunkIndex {
         cache.push(OnceLock::new());
     }
 
-    (cache.into_boxed_slice(), mapping.into_boxed_slice())
+    (
+        cache.into_boxed_slice(),
+        mapping.into_boxed_slice(),
+        needed.into_boxed_slice(),
+    )
+}
+
+/// Parses the decompressed setup-0 blocks: the header and the records of
+/// block 1, the data entries of block 2.
+fn parse_setup0(
+    setup0: &[u8],
+    data_block: &[u8],
+    version: &Version,
+) -> Result<(SetupHeader, ParsedRecords), Error> {
+    let header = SetupHeader::parse(setup0, version)?;
+    let records = parse_records(setup0, data_block, &header, version)?;
+    Ok((header, records))
 }
 
 fn parse_records(
@@ -1299,68 +1572,64 @@ fn parse_records(
     let mut reader = Reader::at(setup0, header.records_offset())?;
     let counts = header.counts();
 
-    let languages = read_n(&mut reader, counts.languages, version, LanguageEntry::read)?;
-    let messages = read_n(
-        &mut reader,
-        counts.custom_messages,
-        version,
-        MessageEntry::read,
-    )?;
-    let permissions = read_n(
-        &mut reader,
-        counts.permissions,
-        version,
-        PermissionEntry::read,
-    )?;
-    let types = read_n(&mut reader, counts.types, version, TypeEntry::read)?;
-    let components = read_n(
-        &mut reader,
-        counts.components,
-        version,
-        ComponentEntry::read,
-    )?;
-    let tasks = read_n(&mut reader, counts.tasks, version, TaskEntry::read)?;
-    let directories = read_n(
-        &mut reader,
-        counts.directories,
-        version,
-        DirectoryEntry::read,
-    )?;
+    let languages = read_n::<LanguageEntry>(&mut reader, counts.languages, version)?;
+    // Before 4.0.0 the wizard images and the decompressor DLL come here,
+    // between the language options and the rest; later they follow the
+    // uninstall-run entries and end the block (see `setupfiles`).
+    let mut setup_files = if version.at_least(4, 0, 0) {
+        None
+    } else {
+        Some(setupfiles::read(&mut reader, header, version)?)
+    };
+    let messages = read_n::<MessageEntry>(&mut reader, counts.custom_messages, version)?;
+    let permissions = read_n::<PermissionEntry>(&mut reader, counts.permissions, version)?;
+    let types = read_n::<TypeEntry>(&mut reader, counts.types, version)?;
+    let components = read_n::<ComponentEntry>(&mut reader, counts.components, version)?;
+    let tasks = read_n::<TaskEntry>(&mut reader, counts.tasks, version)?;
+    let directories = read_n::<DirectoryEntry>(&mut reader, counts.directories, version)?;
     // 6.5+ ISSigKeys: 3 String fields per entry (PublicX, PublicY,
     // RuntimeID). See `records::isssigkey`.
     let iss_sig_keys = if let Some(n) = counts.iss_sig_keys {
-        read_n(&mut reader, n, version, ISSigKeyEntry::read)?
+        read_n::<ISSigKeyEntry>(&mut reader, n, version)?
     } else {
         Vec::new()
     };
-    let files = read_n(&mut reader, counts.files, version, FileEntry::read)?;
-    let icons = read_n(&mut reader, counts.icons, version, IconEntry::read)?;
-    let ini_entries = read_n(&mut reader, counts.ini_entries, version, IniEntry::read)?;
-    let registry = read_n(&mut reader, counts.registry, version, RegistryEntry::read)?;
-    let install_deletes = read_n(
-        &mut reader,
-        counts.install_deletes,
-        version,
-        DeleteEntry::read,
-    )?;
-    let uninstall_deletes = read_n(
-        &mut reader,
-        counts.uninstall_deletes,
-        version,
-        DeleteEntry::read,
-    )?;
-    let run = read_n(&mut reader, counts.run, version, RunEntry::read)?;
-    let uninstall_run = read_n(&mut reader, counts.uninstall_run, version, RunEntry::read)?;
+    let files = read_n::<FileEntry>(&mut reader, counts.files, version)?;
+    let icons = read_n::<IconEntry>(&mut reader, counts.icons, version)?;
+    let ini_entries = read_n::<IniEntry>(&mut reader, counts.ini_entries, version)?;
+    let registry = read_n::<RegistryEntry>(&mut reader, counts.registry, version)?;
+    let install_deletes = read_n::<DeleteEntry>(&mut reader, counts.install_deletes, version)?;
+    let uninstall_deletes = read_n::<DeleteEntry>(&mut reader, counts.uninstall_deletes, version)?;
+    let run = read_n::<RunEntry>(&mut reader, counts.run, version)?;
+    let uninstall_run = read_n::<RunEntry>(&mut reader, counts.uninstall_run, version)?;
+
+    // From 4.0.0 the wizard images and DLLs end the block, which
+    // `setupfiles::read` checks. Before, nothing follows the uninstall-run
+    // entries; a byte left over means a wrong layout either way.
+    let setup_files = match setup_files.take() {
+        Some(files) => {
+            if reader.remaining() != 0 {
+                return Err(Error::TrailingData {
+                    what: "setup-0 records block",
+                    len: reader.remaining(),
+                });
+            }
+            files
+        }
+        None => setupfiles::read(&mut reader, header, version)?,
+    };
 
     // Block 2: file-location records. Even when count is 0 the
     // block is well-formed; we just don't read anything from it.
     let mut data_reader = Reader::new(data_block);
-    let file_locations = read_n(
-        &mut data_reader,
-        counts.file_locations,
-        version,
-        DataEntry::read,
-    )?;
+    let file_locations = read_n::<DataEntry>(&mut data_reader, counts.file_locations, version)?;
+    // Block 2 holds the data entries and nothing else.
+    if data_reader.remaining() != 0 {
+        return Err(Error::TrailingData {
+            what: "setup-0 data entries block",
+            len: data_reader.remaining(),
+        });
+    }
 
     Ok(ParsedRecords {
         languages,
@@ -1380,24 +1649,23 @@ fn parse_records(
         run,
         uninstall_run,
         file_locations,
+        setup_files,
     })
 }
 
-fn read_n<T, F>(
+fn read_n<T: FromReader>(
     reader: &mut Reader<'_>,
     count: u32,
     version: &Version,
-    mut read_one: F,
-) -> Result<Vec<T>, Error>
-where
-    F: FnMut(&mut Reader<'_>, &Version) -> Result<T, Error>,
-{
+) -> Result<Vec<T>, Error> {
     let cap = usize::try_from(count).map_err(|_| Error::Overflow {
         what: "record count",
     })?;
-    let mut out = Vec::with_capacity(cap);
+    // A count comes from the file: every record is at least a byte, so
+    // never reserve more than the bytes left could hold.
+    let mut out = Vec::with_capacity(cap.min(reader.remaining()));
     for _ in 0..cap {
-        out.push(read_one(reader, version)?);
+        out.push(read_record::<T>(reader, version)?);
     }
     Ok(out)
 }
@@ -1437,4 +1705,47 @@ fn parse_encryption_header(reader: &mut Reader<'_>) -> Result<Option<EncryptionI
         base_nonce,
         password_test,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::upstream::{MARKERS, encode_strings, version};
+
+    /// A 1.3.25 setup-0 with no records: the header as upstream declares
+    /// it, every count zero, and the one wizard image, empty.
+    fn empty_setup0_1_3_25() -> (Vec<u8>, Version) {
+        let header = MARKERS
+            .iter()
+            .find(|m| m.id == "1.3.25")
+            .and_then(|m| {
+                m.variants[0].builds[0]
+                    .records
+                    .iter()
+                    .find(|r| r.name == "TSetupHeader")
+            })
+            .expect("1.3.25 TSetupHeader");
+        let mut setup0 = Vec::new();
+        encode_strings(header, false, &version("1.3.25", false), &mut setup0);
+        setup0.resize(setup0.len() + header.tail, 0);
+        setup0.extend_from_slice(&0u32.to_le_bytes());
+        (setup0, version("1.3.25", false))
+    }
+
+    #[test]
+    fn bytes_past_the_records_are_trailing_data() {
+        let (setup0, version) = empty_setup0_1_3_25();
+        parse_setup0(&setup0, &[], &version).expect("empty 1.3.25 setup-0 parses");
+
+        let mut longer = setup0.clone();
+        longer.push(0);
+        assert!(matches!(
+            parse_setup0(&longer, &[], &version),
+            Err(Error::TrailingData { len: 1, .. })
+        ));
+        assert!(matches!(
+            parse_setup0(&setup0, &[0], &version),
+            Err(Error::TrailingData { len: 1, .. })
+        ));
+    }
 }

@@ -1,44 +1,44 @@
-//! `TSetupTaskEntry` - installable task definition (`[Tasks]`
-//! section directives).
+//! `TSetupTaskEntry`: one `[Tasks]` entry, an optional action the user
+//! checks on the wizard's Select Additional Tasks page, such as "create a
+//! desktop icon". Tasks form a tree by their names, like components.
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupTaskEntry = packed record
-//!     Name, Description, GroupDescription, Components,
-//!         Languages, Check: String;
-//!     Level: Integer;          // since 4.0.0
-//!     Used: Boolean;           // since 4.0.0
-//!     MinVersion, OnlyBelowVersion: TSetupVersionData;
-//!     Options: TSetupTaskOptions;  // 1-byte flag set
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/task.cpp`. Flag layout:
-//! - 0: Exclusive (always)
-//! - 1: Unchecked (always)
-//! - 2: Restart (2.0.5+)
-//! - 3: CheckedOnce (2.0.6+)
-//! - 4: DontInheritCheck (4.2.3+)
+//! On disk (`SECompressedBlockWrite`): `Name`, `Description`,
+//! `GroupDescription`, `Components`, from 4.0.1 `Languages`, from 4.0.0
+//! `Check`, from 4.0.0 `Level` and `Used`, the Windows version range and the
+//! `Options` set. Reader reference: innoextract `setup/task.cpp`; every
+//! layout is checked against upstream's own declarations by the
+//! `crate::upstream` tests.
 
 use std::collections::HashSet;
 
 use crate::{
     error::Error,
     records::windows::WindowsVersionRange,
-    util::{encoding::read_setup_string, read::Reader},
+    util::{
+        encoding::read_setup_string,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// `TSetupTaskOptions` flag bits.
+/// `TSetupTaskEntry.Options`: the entry's `Flags:`. `checkablealone` has
+/// no bit; it sets [`TaskEntry::used`].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(missing_docs)]
 pub enum TaskFlag {
+    /// `toExclusive` (`exclusive`): mutually exclusive with its exclusive
+    /// siblings, shown as a radio button.
     Exclusive,
+    /// `toUnchecked` (`unchecked`): starts unchecked.
     Unchecked,
+    /// `toRestart` (`restart`): ask to restart Windows when the task is
+    /// selected (2.0.5+).
     Restart,
+    /// `toCheckedOnce` (`checkedonce`): starts unchecked when a previous
+    /// installation of the application is found (2.0.6+).
     CheckedOnce,
+    /// `toDontInheritCheck` (`dontinheritcheck`): not checked automatically
+    /// when its parent is (4.2.3+).
     DontInheritCheck,
 }
 
@@ -50,41 +50,48 @@ stable_flag_enum!(TaskFlag, {
     DontInheritCheck => "dont_inherit_check",
 });
 
-/// Parsed `TSetupTaskEntry`.
+/// One `[Tasks]` entry (`TSetupTaskEntry`). A string field the version does
+/// not have is empty.
 #[derive(Clone, Debug)]
 pub struct TaskEntry {
-    /// `Name:` directive.
+    /// `Name:`: the task's internal name, `\`-separated by level, which
+    /// `Tasks:` parameters name.
     pub name: String,
-    /// `Description:` directive.
+    /// `Description:`: the checkbox text, constants unexpanded.
     pub description: String,
-    /// `GroupDescription:` directive - section header in the wizard's
-    /// task list.
+    /// `GroupDescription:`: the heading consecutive tasks with the same
+    /// value are grouped under.
     pub group_description: String,
-    /// `Components:` filter (semicolon-separated).
+    /// `Components:`: space-separated components the task belongs to; it is
+    /// shown only when one of them is selected. Empty means always.
     pub components: String,
-    /// `Languages:` filter. 4.0.1+.
+    /// `Languages:`: the languages the task is offered in (4.0.1+).
     pub languages: String,
-    /// `Check:` directive. 4.0.0+ (or ISX 1.3.24+).
+    /// `Check:`: the `[Code]` function deciding whether it is offered
+    /// (4.0.0+, or any ISX build).
     pub check: String,
-    /// `Level:` directive - task priority.
+    /// The entry's depth in the tree: the number of `\` or `/` in its
+    /// name, 0 for a top-level entry (a byte from 6.7.0; 4.0.0+, 0 before).
     pub level: i32,
-    /// `Used:` boolean. Defaults to `true` on older versions.
+    /// `Used`: some entry names the task in `Tasks:`, or it has the
+    /// `checkablealone` flag; the wizard then keeps it checkable when all its
+    /// children are unchecked (4.0.0+; `true` before).
     pub used: bool,
-    /// MinVersion + OnlyBelowVersion.
+    /// `MinVersion:` / `OnlyBelowVersion:`.
     pub winver: WindowsVersionRange,
-    /// Decoded options.
+    /// `Options`, decoded.
     pub flags: HashSet<TaskFlag>,
-    /// Raw `Options` byte.
+    /// `Options` as stored.
     pub options_raw: u8,
 }
 
-impl TaskEntry {
+impl FromReader for TaskEntry {
     /// Reads one `TSetupTaskEntry`.
     ///
     /// # Errors
     ///
     /// String decoding / truncation / overflow per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error> {
         let name = read_setup_string(reader, version, "Task.Name")?;
         let description = read_setup_string(reader, version, "Task.Description")?;
         let group_description = read_setup_string(reader, version, "Task.GroupDescription")?;
@@ -149,7 +156,7 @@ fn decode_task_flags(raw: u8, version: &Version) -> HashSet<TaskFlag> {
     if version.at_least(4, 2, 3) {
         table.push(TaskFlag::DontInheritCheck);
     }
-    super::decode_packed_flags(&[raw], &table)
+    crate::util::flags::decode_packed_flags(&[raw], &table)
 }
 
 #[cfg(test)]

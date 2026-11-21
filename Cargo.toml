@@ -9,7 +9,7 @@ repository = "https://github.com/ATRAPSLLC/innospect"
 readme = "README.md"
 keywords = ["inno-setup", "installer", "parser", "reverse-engineering", "binary-analysis"]
 categories = ["parser-implementations"]
-exclude = ["tests/samples/", "reference/", "research/"]
+exclude = ["tests/samples/"]
 
 # innospect is used in malware-analysis pipelines where every input byte
 # is adversarial. These lints prevent the parser from panicking on
@@ -33,7 +33,7 @@ goblin = "0.10.7"
 encoding_rs = "0.8.42"
 codepage = "0.1.3"
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
-lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "optimization"] }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "optimization"] }
 bzip2 = "0.6.1"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
@@ -41,7 +41,7 @@ md-5 = "0.11.0"
 pbkdf2 = { version = "0.13.0", default-features = false }
 hmac = "0.13.0"
 chacha20 = { version = "0.10.2", features = ["xchacha"] }
-pascalscript = "0.2.0"
+pascalscript = "0.2.1"
 
 [dev-dependencies]
 lzma-rs = "0.3"

@@ -1,44 +1,37 @@
-//! `TSetupPermissionEntry` - opaque permissions blob.
+//! `TSetupPermissionEntry`: one access-control list a `Permissions:`
+//! parameter grants, shared by the entries that index it (4.1.0+).
 //!
-//! Pascal layout (`is-6_4_1:Projects/Src/Shared.Struct.pas`):
-//!
-//! ```text
-//! TSetupPermissionEntry = packed record
-//!     Permissions: AnsiString;     // an array of TGrantPermissionEntry
-//! end;
-//! ```
-//!
-//! Reader reference: `research/src/setup/permission.cpp`. The inner
-//! `TGrantPermissionEntry[]` (each entry: 16-byte SID + 4-byte mask
-//! = 20 bytes) is surfaced as raw bytes for callers to dump or
-//! hash; typed access can be layered on without changing the wire
-//! shape.
-//!
-//! See `research-notes/07-issrc-shared-struct.md` §B for the inner
-//! struct's full byte layout.
+//! On disk (`SECompressedBlockWrite`): `Permissions`, an `AnsiString`
+//! holding an array of `TGrantPermissionEntry`. Each element is 20 bytes:
+//! the SID as a 6-byte identifier authority, a sub-authority count and up
+//! to two 32-bit sub-authorities (with alignment, 16 bytes), then the
+//! 32-bit access mask. Reader reference: innoextract
+//! `setup/permission.cpp`.
 
 use crate::{
     error::Error,
-    util::{encoding::read_ansi_bytes, read::Reader},
+    util::{
+        encoding::read_ansi_bytes,
+        read::{FromReader, Reader},
+    },
     version::Version,
 };
 
-/// Parsed `TSetupPermissionEntry`. Inno Setup 4.1.0+.
+/// One shared ACL (`TSetupPermissionEntry`, 4.1.0+).
 #[derive(Clone, Debug, Default)]
 pub struct PermissionEntry {
-    /// Raw bytes of the inner `TGrantPermissionEntry[]` blob, as
-    /// stored on disk. Length is always a multiple of 20 in
-    /// well-formed installers.
+    /// `Permissions` as stored: the `TGrantPermissionEntry` array, 20 bytes
+    /// per grant (see the module documentation).
     pub permissions: Vec<u8>,
 }
 
-impl PermissionEntry {
+impl FromReader for PermissionEntry {
     /// Reads one `TSetupPermissionEntry`.
     ///
     /// # Errors
     ///
     /// Truncation per [`Error`].
-    pub(crate) fn read(reader: &mut Reader<'_>, _version: &Version) -> Result<Self, Error> {
+    fn read(reader: &mut Reader<'_>, _version: &Version) -> Result<Self, Error> {
         let permissions = read_ansi_bytes(reader, "Permission.Permissions")?;
         Ok(Self { permissions })
     }

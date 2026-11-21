@@ -3,7 +3,7 @@
 //!
 //! Inno's `Setup.exe` registers ~200 functions / procedures that
 //! `[Code]` scripts can call. The canonical inventory lives in
-//! `research/issrc/Projects/Src/Shared.ScriptFunc.pas` -
+//! issrc `Projects/Src/Shared.ScriptFunc.pas` -
 //! `ScriptFuncTables[sftScriptDlg]`, `[sftCommonFunc]`,
 //! `[sftPathFunc]`, `[sftInstall]`, `[sftInstFunc]`,
 //! `[sftMainFunc]`, etc. - plus the `DelphiScriptFuncTable` of

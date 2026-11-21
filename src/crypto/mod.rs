@@ -16,14 +16,9 @@
 //! Everything in this module is validated against published test
 //! vectors (RFC 7914 / IETF XChaCha20 draft / RC4 reference)
 //! independently of any installer integration. The parser-side
-//! wiring lives in `extract::chunk`.
+//! wiring lives in `stream::chunk`.
 
-// Some primitives are validated against published test vectors
-// but are not exercised by every code path; the dead-code lint
-// is silenced module-wide so partial integration doesn't trip it.
-#![allow(dead_code)]
-
-pub(crate) mod arc4;
-pub(crate) mod kdflegacy;
-pub(crate) mod pbkdf2;
-pub(crate) mod xchacha20;
+pub mod arc4;
+pub mod kdflegacy;
+pub mod pbkdf2;
+pub mod xchacha20;

@@ -1,10 +1,9 @@
-//! Inno Setup version marker parsing and the [`Version`] / [`Variant`]
-//! / [`VersionFlags`] types.
+//! The Inno Setup version an installer's setup data was written by: the
+//! [`Version`] / [`Variant`] / [`VersionFlags`] types, decoded from the
+//! SetupID marker that begins setup-0.
 //!
-//! The 64-byte ASCII marker that begins setup-0 takes one of three
-//! forms across the format's history (see `RESEARCH.md` §3 and
-//! `research-notes/02-loader-and-version.md` for the canonical
-//! reference):
+//! The 64-byte ASCII marker that begins setup-0 (`SetupID` in upstream's
+//! `Struct.pas`) takes one of three forms across the format's history:
 //!
 //! - **Stock**, e.g. `Inno Setup Setup Data (6.4.0.1) (u)\0...`
 //! - **ISX** (My Inno Setup Extensions), e.g.
@@ -12,10 +11,11 @@
 //! - **Legacy 1.2.10**, the 12-byte form `i1.2.10--16\x1a` or
 //!   `i1.2.10--32\x1a`
 //!
-//! BlackBox / GOG / GOG Galaxy modifications are detected at later
-//! stages of the parse and reported via [`Variant`].
-
-use crate::{error::Error, util::read::Reader};
+//! The stock and 1.2.10 forms are verified against upstream's source and
+//! real installers (the 32-bit 1.2.10 build against the source only). ISX
+//! markers are recognised and their known layout differences applied, but
+//! no ISX installer is tested; the BlackBox / GOG / GOG Galaxy repackagings
+//! are not detected (see [`Variant`]).
 
 /// A parsed Inno Setup version, including variant flags and the raw
 /// 64-byte marker bytes for diagnostic display.
@@ -92,30 +92,58 @@ impl Version {
     }
 }
 
-/// Variant of an Inno Setup installer, beyond the core version numbers.
+/// `a.b.c`, `.d` when it is not 0, then ` (u)` for a Unicode build, ` (ISX)`
+/// for My Inno Setup Extensions and ` (16-bit)` for a 16-bit one: `6.4.0.1
+/// (u)`, `5.5.7`, `1.2.10 (16-bit)`. The marker as written is
+/// [`Version::marker_str`].
+impl core::fmt::Display for Version {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}.{}", self.a, self.b, self.c)?;
+        if self.d != 0 {
+            write!(f, ".{}", self.d)?;
+        }
+        if self.is_unicode() {
+            f.write_str(" (u)")?;
+        }
+        if self.is_isx() {
+            f.write_str(" (ISX)")?;
+        }
+        if self.is_16bit() {
+            f.write_str(" (16-bit)")?;
+        }
+        Ok(())
+    }
+}
+
+/// Which kind of installer the SetupID marker says this is.
 ///
-/// Detection happens in stages: the marker tells us [`Variant::Stock`]
-/// vs [`Variant::Isx`] vs [`Variant::Legacy1210`] up front; downstream
-/// parsing may upgrade the result to [`Variant::BlackBox`],
-/// [`Variant::Gog`], or [`Variant::GogGalaxy`] if those modifications
-/// are detected.
+/// The parser reports [`Variant::Stock`], [`Variant::Isx`] or
+/// [`Variant::Legacy1210`], from the marker alone. [`Variant::BlackBox`],
+/// [`Variant::Gog`] and [`Variant::GogGalaxy`] name repackagings this crate
+/// does not detect or support; it never reports them, and they are kept so
+/// a future detector does not change the type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Variant {
-    /// Standard upstream Inno Setup installer.
+    /// An installer built by upstream's Inno Setup compiler.
     Stock,
-    /// My Inno Setup Extensions (Martijn Laan's pre-merger fork).
+    /// My Inno Setup Extensions, Martijn Laan's fork that merged into
+    /// Inno Setup 4.0. Recognised, not tested.
     Isx,
-    /// Legacy 12-byte `i1.2.10--16\x1a` / `--32\x1a` marker.
+    /// The 12-byte `i1.2.10--16\x1a` / `--32\x1a` marker 1.2.10 to 1.2.16
+    /// write, for their 16-bit and 32-bit builds. The 16-bit build is
+    /// tested against 1.2.16's own package; no 32-bit 1.2 compiler
+    /// survives, so that build is checked against upstream's record
+    /// layouts only.
     Legacy1210,
-    /// Marker stripped or replaced with garbage but the layout is
-    /// otherwise valid Inno Setup. Reported by later parsing stages.
+    /// An installer whose marker was stripped or replaced but whose layout
+    /// is otherwise Inno Setup's. Not detected; never reported.
     BlackBox,
-    /// GOG.com installer with the `info.script.json` side file.
-    /// Reported by later parsing stages.
+    /// A GOG.com installer, with the `info.script.json` side file. Not
+    /// detected; never reported.
     Gog,
-    /// GOG Galaxy installer with multi-volume RAR file parts.
-    /// Reported by later parsing stages.
+    /// A GOG Galaxy installer, with multi-volume RAR file parts. Not
+    /// detected; never reported.
     GogGalaxy,
 }
 
@@ -142,232 +170,5 @@ bitflags::bitflags! {
         /// My Inno Setup Extensions variant. Set by the
         /// `My Inno Setup Extensions Setup Data` marker prefix.
         const ISX = 1 << 2;
-    }
-}
-
-const STOCK_PREFIX: &[u8] = b"Inno Setup Setup Data (";
-const ISX_PREFIX: &[u8] = b"My Inno Setup Extensions Setup Data (";
-const LEGACY_1210_16: &[u8] = b"i1.2.10--16\x1a";
-const LEGACY_1210_32: &[u8] = b"i1.2.10--32\x1a";
-
-/// Parses the 64-byte marker at the start of setup-0 and returns the
-/// decoded [`Version`] + initial [`Variant`] guess.
-///
-/// # Errors
-///
-/// Returns [`Error::UnsupportedVersion`] if the marker matches neither
-/// the stock, ISX, nor legacy 1.2.10 form.
-pub(crate) fn parse_marker(marker: &[u8; 64]) -> Result<(Version, Variant), Error> {
-    if let Some(v) = parse_legacy_1210(marker) {
-        return Ok((v, Variant::Legacy1210));
-    }
-    if let Some(v) = parse_modern(marker, ISX_PREFIX, VersionFlags::ISX) {
-        return Ok((v, Variant::Isx));
-    }
-    if let Some(v) = parse_modern(marker, STOCK_PREFIX, VersionFlags::empty()) {
-        return Ok((v, Variant::Stock));
-    }
-    Err(Error::UnsupportedVersion { marker: *marker })
-}
-
-fn parse_legacy_1210(marker: &[u8; 64]) -> Option<Version> {
-    let prefix = marker.get(..LEGACY_1210_16.len())?;
-    if prefix == LEGACY_1210_16 {
-        return Some(Version {
-            a: 1,
-            b: 2,
-            c: 10,
-            d: 0,
-            flags: VersionFlags::BITS16,
-            raw_marker: *marker,
-        });
-    }
-    if prefix == LEGACY_1210_32 {
-        return Some(Version {
-            a: 1,
-            b: 2,
-            c: 10,
-            d: 0,
-            flags: VersionFlags::empty(),
-            raw_marker: *marker,
-        });
-    }
-    None
-}
-
-fn parse_modern(marker: &[u8; 64], prefix: &[u8], extra_flags: VersionFlags) -> Option<Version> {
-    if !marker.starts_with(prefix) {
-        return None;
-    }
-    let after_prefix = marker.get(prefix.len()..)?;
-    // After the opening `(` is `X.Y.Z[.D]) [(u)]\0...`
-    let close = after_prefix.iter().position(|&b| b == b')')?;
-    let inside = after_prefix.get(..close)?;
-    let (a, b, c, d) = parse_dotted(inside)?;
-
-    // Look for an optional trailing `(u)` or `(U)` flag block.
-    let mut flags = extra_flags;
-    let after_close = after_prefix.get(close.checked_add(1)?..).unwrap_or(&[]);
-    if has_unicode_flag(after_close) {
-        flags |= VersionFlags::UNICODE;
-    }
-
-    Some(Version {
-        a,
-        b,
-        c,
-        d,
-        flags,
-        raw_marker: *marker,
-    })
-}
-
-fn parse_dotted(s: &[u8]) -> Option<(u8, u8, u8, u8)> {
-    // Drop a trailing `a` qualifier - innoextract observes this on
-    // some pre-release Inno Setup builds (e.g. `5.5.7a`). It does not
-    // affect binary layout, so we discard it.
-    let core = match s.last().copied() {
-        Some(b'a') => s.get(..s.len().checked_sub(1)?)?,
-        _ => s,
-    };
-    let mut parts = core.split(|&b| b == b'.');
-    let a = parse_u8(parts.next()?)?;
-    let b = parse_u8(parts.next()?)?;
-    let c = parse_u8(parts.next()?)?;
-    let d = match parts.next() {
-        Some(p) => parse_u8(p)?,
-        None => 0,
-    };
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((a, b, c, d))
-}
-
-fn parse_u8(bytes: &[u8]) -> Option<u8> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let mut value: u32 = 0;
-    for &byte in bytes {
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        // byte - b'0' is in 0..=9; saturating + checked_mul protect
-        // against malformed multi-byte fields.
-        let digit = u32::from(byte.saturating_sub(b'0'));
-        value = value.checked_mul(10)?.checked_add(digit)?;
-    }
-    if value > u32::from(u8::MAX) {
-        return None;
-    }
-    Some(value as u8)
-}
-
-fn has_unicode_flag(after_close: &[u8]) -> bool {
-    // Trim leading whitespace, then expect `(u)` or `(U)`.
-    let mut i = 0usize;
-    while let Some(&b) = after_close.get(i) {
-        if b != b' ' {
-            break;
-        }
-        i = i.saturating_add(1);
-    }
-    let tail = after_close.get(i..).unwrap_or(&[]);
-    matches!(tail.get(..3), Some(b"(u)" | b"(U)"))
-}
-
-/// Reads a [`Version`] from the beginning of the given setup-0 buffer
-/// (which begins with the 64-byte SetupID marker).
-///
-/// # Errors
-///
-/// - [`Error::Truncated`] if `setup0` is shorter than 64 bytes.
-/// - [`Error::UnsupportedVersion`] from [`parse_marker`].
-pub(crate) fn read_marker(setup0: &[u8]) -> Result<(Version, Variant), Error> {
-    let mut r = Reader::new(setup0);
-    let marker = r.array::<64>("SetupID marker")?;
-    parse_marker(&marker)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pad_marker(s: &[u8]) -> [u8; 64] {
-        let mut out = [0u8; 64];
-        let take = s.len().min(out.len());
-        out[..take].copy_from_slice(&s[..take]);
-        out
-    }
-
-    #[test]
-    fn stock_marker_with_unicode() {
-        let m = pad_marker(b"Inno Setup Setup Data (6.4.0.1) (u)");
-        let (v, variant) = parse_marker(&m).unwrap();
-        assert_eq!((v.a, v.b, v.c, v.d), (6, 4, 0, 1));
-        assert!(v.is_unicode());
-        assert!(!v.is_isx());
-        assert_eq!(variant, Variant::Stock);
-        assert_eq!(v.marker_str(), "Inno Setup Setup Data (6.4.0.1) (u)");
-    }
-
-    #[test]
-    fn stock_marker_no_qualifier() {
-        let m = pad_marker(b"Inno Setup Setup Data (6.1.0) (u)");
-        let (v, _) = parse_marker(&m).unwrap();
-        assert_eq!((v.a, v.b, v.c, v.d), (6, 1, 0, 0));
-        assert!(v.is_unicode());
-    }
-
-    #[test]
-    fn isx_marker() {
-        let m = pad_marker(b"My Inno Setup Extensions Setup Data (3.0.4)");
-        let (v, variant) = parse_marker(&m).unwrap();
-        assert_eq!((v.a, v.b, v.c, v.d), (3, 0, 4, 0));
-        assert!(v.is_isx());
-        assert!(!v.is_unicode());
-        assert_eq!(variant, Variant::Isx);
-    }
-
-    #[test]
-    fn legacy_1210_32() {
-        let m = pad_marker(b"i1.2.10--32\x1a");
-        let (v, variant) = parse_marker(&m).unwrap();
-        assert_eq!((v.a, v.b, v.c), (1, 2, 10));
-        assert!(!v.is_16bit());
-        assert_eq!(variant, Variant::Legacy1210);
-    }
-
-    #[test]
-    fn legacy_1210_16() {
-        let m = pad_marker(b"i1.2.10--16\x1a");
-        let (v, _) = parse_marker(&m).unwrap();
-        assert!(v.is_16bit());
-    }
-
-    #[test]
-    fn marker_with_trailing_a() {
-        let m = pad_marker(b"Inno Setup Setup Data (5.5.7a) (u)");
-        let (v, _) = parse_marker(&m).unwrap();
-        assert_eq!((v.a, v.b, v.c, v.d), (5, 5, 7, 0));
-    }
-
-    #[test]
-    fn unrecognized_marker_is_unsupported() {
-        let m = pad_marker(b"Some Other Installer 1.2.3");
-        let err = parse_marker(&m).unwrap_err();
-        assert!(matches!(err, Error::UnsupportedVersion { .. }));
-    }
-
-    #[test]
-    fn at_least_compares_first_three_components() {
-        let m = pad_marker(b"Inno Setup Setup Data (6.4.0.1) (u)");
-        let (v, _) = parse_marker(&m).unwrap();
-        assert!(v.at_least(6, 4, 0));
-        assert!(v.at_least(5, 1, 5));
-        assert!(!v.at_least(7, 0, 0));
-        assert!(v.at_least_4(6, 4, 0, 1));
-        assert!(!v.at_least_4(6, 4, 0, 2));
     }
 }

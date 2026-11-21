@@ -2,7 +2,7 @@
 //!
 //! Each `DataEntry` records a content hash whose family depends on
 //! the installer's Inno Setup version (per
-//! `research/src/setup/data.cpp:101-114`):
+//! innoextract `setup/data.cpp`):
 //!
 //! | Version range  | Family   |
 //! | -------------- | -------- |
@@ -13,7 +13,7 @@
 //! | 6.4.0+         | SHA-256  |
 //!
 //! The `Hasher` here wraps each algorithm behind one streaming
-//! interface so [`crate::extract::file::FileReader`] can feed bytes
+//! interface so [`crate::stream::file::FileReader`] can feed bytes
 //! through `update` and finalize at EOF without caring about the
 //! family.
 
@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// Running hasher chosen by the [`DataChecksum`] family.
-pub(crate) enum Hasher {
+pub enum Hasher {
     Adler32 {
         state: Adler32State,
         expected: u32,
@@ -53,7 +53,7 @@ pub(crate) enum Hasher {
 
 impl Hasher {
     /// Constructs the hasher matching the entry's recorded checksum.
-    pub(crate) fn from_data_checksum(c: &DataChecksum) -> Self {
+    pub fn from_data_checksum(c: &DataChecksum) -> Self {
         match *c {
             DataChecksum::Adler32(expected) => Self::Adler32 {
                 state: Adler32State::new(),
@@ -79,7 +79,7 @@ impl Hasher {
     }
 
     /// Feeds bytes into the running hash.
-    pub(crate) fn update(&mut self, bytes: &[u8]) {
+    pub fn update(&mut self, bytes: &[u8]) {
         match self {
             Self::Adler32 { state, .. } => state.update(bytes),
             Self::Crc32 { state, .. } => *state = crc32_update(*state, bytes),
@@ -91,7 +91,7 @@ impl Hasher {
 
     /// Finalizes and verifies. Returns `Err(Error::ChecksumMismatch)`
     /// if the hash differs from the expected value.
-    pub(crate) fn finalize(self) -> Result<(), Error> {
+    pub fn finalize(self) -> Result<(), Error> {
         match self {
             Self::Adler32 { state, expected } => {
                 let actual = state.finalize();
@@ -162,17 +162,17 @@ fn nibble(n: u8) -> char {
 }
 
 /// Adler-32 state machine. RFC 1950 §9, `Mod = 65521`.
-pub(crate) struct Adler32State {
+pub struct Adler32State {
     a: u32,
     b: u32,
 }
 
 impl Adler32State {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self { a: 1, b: 0 }
     }
 
-    pub(crate) fn update(&mut self, bytes: &[u8]) {
+    pub fn update(&mut self, bytes: &[u8]) {
         const MOD: u32 = 65521;
         // Process in chunks of 5552 to defer the modulo step
         // (avoids overflow per the canonical Adler32 implementation).
@@ -186,7 +186,7 @@ impl Adler32State {
         }
     }
 
-    pub(crate) fn finalize(self) -> u32 {
+    pub fn finalize(self) -> u32 {
         // (b << 16) | a
         (self.b << 16) | self.a
     }

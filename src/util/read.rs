@@ -4,21 +4,68 @@
 //! (no `[i]` indexing, no `unwrap`, no arithmetic side effects). Every
 //! operation that could fail returns [`Error`] instead of panicking.
 
-use crate::error::Error;
+use crate::{error::Error, version::Version};
 
-/// Forward-only cursor over a byte slice.
-#[derive(Debug)]
-pub(crate) struct Reader<'a> {
+/// A setup-0 record: read from `reader` in the layout `version` writes.
+///
+/// Every record type implements this. The trait lives in this private
+/// module, so the constructors are reachable inside the crate and nowhere
+/// else.
+pub trait FromReader: Sized {
+    /// Reads one record.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Truncated`] when the record runs past the input, or the
+    /// record's own decoding errors.
+    fn read(reader: &mut Reader<'_>, version: &Version) -> Result<Self, Error>;
+
+    /// Whether Setup reads the record, before 1.3.0, behind a u32 holding
+    /// its size. Every record is except a data entry, which it reads raw
+    /// (1.2.16 `MAIN.PAS`).
+    const SIZED_BEFORE_1_3: bool = true;
+}
+
+/// Reads one setup-0 record as Setup does. Before 1.3.0 a record (see
+/// [`FromReader::SIZED_BEFORE_1_3`]) follows a u32 holding its size
+/// (1.2.16 `SETUPENT.PAS`, `SEInflateBlockRead`); it is read from exactly
+/// that many bytes, every one of which it must use.
+///
+/// # Errors
+///
+/// The record's own errors, [`Error::Truncated`] when the size runs past
+/// the input, and [`Error::TrailingData`] when the record is shorter than
+/// its size.
+pub fn read_record<T: FromReader>(reader: &mut Reader<'_>, version: &Version) -> Result<T, Error> {
+    if !T::SIZED_BEFORE_1_3 || version.at_least(1, 3, 0) {
+        return T::read(reader, version);
+    }
+    let size = reader.u32_le("record size")?;
+    let size = usize::try_from(size).map_err(|_| Error::Overflow {
+        what: "record size",
+    })?;
+    let mut record = Reader::new(reader.take(size, "record")?);
+    let value = T::read(&mut record, version)?;
+    if record.remaining() != 0 {
+        return Err(Error::TrailingData {
+            what: "record",
+            len: record.remaining(),
+        });
+    }
+    Ok(value)
+}
+
+/// Forward-only cursor over a byte slice. A clone is a second cursor at
+/// the same position, for reading ahead.
+#[derive(Clone, Debug)]
+pub struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
-// Some accessors are not exercised by every caller; suppress
-// dead-code warnings rather than narrow the surface.
-#[allow(dead_code)]
 impl<'a> Reader<'a> {
     /// Wraps `buf` with the cursor positioned at offset 0.
-    pub(crate) fn new(buf: &'a [u8]) -> Self {
+    pub fn new(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
 
@@ -27,7 +74,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Returns [`Error::Truncated`] if `start` is past the end of `buf`.
-    pub(crate) fn at(buf: &'a [u8], start: usize) -> Result<Self, Error> {
+    pub fn at(buf: &'a [u8], start: usize) -> Result<Self, Error> {
         if start > buf.len() {
             return Err(Error::Truncated { what: "Reader::at" });
         }
@@ -35,12 +82,12 @@ impl<'a> Reader<'a> {
     }
 
     /// Current byte offset into the underlying slice.
-    pub(crate) fn pos(&self) -> usize {
+    pub fn pos(&self) -> usize {
         self.pos
     }
 
     /// Bytes still available beyond the cursor.
-    pub(crate) fn remaining(&self) -> usize {
+    pub fn remaining(&self) -> usize {
         self.buf.len().saturating_sub(self.pos)
     }
 
@@ -50,7 +97,7 @@ impl<'a> Reader<'a> {
     ///
     /// Returns [`Error::Overflow`] if `pos + n` overflows `usize`,
     /// [`Error::Truncated`] if it runs past the end of the buffer.
-    pub(crate) fn skip(&mut self, n: usize, what: &'static str) -> Result<(), Error> {
+    pub fn skip(&mut self, n: usize, what: &'static str) -> Result<(), Error> {
         let new_pos = self.pos.checked_add(n).ok_or(Error::Overflow { what })?;
         if new_pos > self.buf.len() {
             return Err(Error::Truncated { what });
@@ -65,7 +112,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn take(&mut self, n: usize, what: &'static str) -> Result<&'a [u8], Error> {
+    pub fn take(&mut self, n: usize, what: &'static str) -> Result<&'a [u8], Error> {
         let new_pos = self.pos.checked_add(n).ok_or(Error::Overflow { what })?;
         let slice = self
             .buf
@@ -81,7 +128,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn array<const N: usize>(&mut self, what: &'static str) -> Result<[u8; N], Error> {
+    pub fn array<const N: usize>(&mut self, what: &'static str) -> Result<[u8; N], Error> {
         let bytes = self.take(N, what)?;
         let mut out = [0u8; N];
         // bytes.len() == N is guaranteed by `take` returning the
@@ -96,7 +143,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Returns [`Error::Truncated`] if the buffer is exhausted.
-    pub(crate) fn u8(&mut self, what: &'static str) -> Result<u8, Error> {
+    pub fn u8(&mut self, what: &'static str) -> Result<u8, Error> {
         let b = self
             .buf
             .get(self.pos)
@@ -111,7 +158,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn u16_le(&mut self, what: &'static str) -> Result<u16, Error> {
+    pub fn u16_le(&mut self, what: &'static str) -> Result<u16, Error> {
         Ok(u16::from_le_bytes(self.array::<2>(what)?))
     }
 
@@ -120,7 +167,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn u32_le(&mut self, what: &'static str) -> Result<u32, Error> {
+    pub fn u32_le(&mut self, what: &'static str) -> Result<u32, Error> {
         Ok(u32::from_le_bytes(self.array::<4>(what)?))
     }
 
@@ -129,7 +176,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn i32_le(&mut self, what: &'static str) -> Result<i32, Error> {
+    pub fn i32_le(&mut self, what: &'static str) -> Result<i32, Error> {
         Ok(i32::from_le_bytes(self.array::<4>(what)?))
     }
 
@@ -138,7 +185,7 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn u64_le(&mut self, what: &'static str) -> Result<u64, Error> {
+    pub fn u64_le(&mut self, what: &'static str) -> Result<u64, Error> {
         Ok(u64::from_le_bytes(self.array::<8>(what)?))
     }
 
@@ -147,28 +194,57 @@ impl<'a> Reader<'a> {
     /// # Errors
     ///
     /// Same as [`Reader::skip`].
-    pub(crate) fn i64_le(&mut self, what: &'static str) -> Result<i64, Error> {
+    pub fn i64_le(&mut self, what: &'static str) -> Result<i64, Error> {
         Ok(i64::from_le_bytes(self.array::<8>(what)?))
+    }
+
+    /// Reads a Delphi `Integer` or `Cardinal` as unsigned: four bytes, two
+    /// in a 16-bit installer (1.2.x, Delphi 1), zero-extended.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Truncated`] if the value runs past the buffer.
+    pub fn native_u32(&mut self, version: &Version, what: &'static str) -> Result<u32, Error> {
+        if version.is_16bit() {
+            self.u16_le(what).map(u32::from)
+        } else {
+            self.u32_le(what)
+        }
+    }
+
+    /// Reads a Delphi `Integer`: four bytes, two in a 16-bit installer
+    /// (1.2.x, Delphi 1), sign-extended.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Truncated`] if the value runs past the buffer.
+    pub fn native_i32(&mut self, version: &Version, what: &'static str) -> Result<i32, Error> {
+        if version.is_16bit() {
+            self.u16_le(what).map(|v| i32::from(v.cast_signed()))
+        } else {
+            self.i32_le(what)
+        }
     }
 
     /// Reads a Pascal `set` / `flags` bitfield as raw bytes.
     ///
-    /// Per `research-notes/11-fixed-tail.md` and innoextract's
-    /// `stored_bitfield<Bits, PadBits>` (`research/src/util/storedenum.hpp:99`),
+    /// As Delphi stores them, and as innoextract's
+    /// `stored_bitfield<Bits, PadBits>` (innoextract `util/storedenum.hpp`) reads them,
     /// Inno Setup encodes a `set` of `bit_count` flags as
     /// `ceil(bit_count / 8)` bytes, with one special case: when
-    /// the result is exactly 3 bytes and `pad_to_4` is set (the
-    /// non-16-bit build default), one trailing padding byte is
-    /// consumed and dropped. The padding byte is **not** returned.
+    /// the result is exactly 3 bytes, the 32-bit Delphi compilers pad it
+    /// to 4, so one trailing padding byte is consumed and dropped, except
+    /// in a 16-bit installer (1.2.x), whose Delphi 1 does not pad. The
+    /// padding byte is **not** returned.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Truncated`] / [`Error::Overflow`] if the
     /// requested run of bytes runs past the buffer.
-    pub(crate) fn set_bytes(
+    pub fn set_bytes(
         &mut self,
         bit_count: usize,
-        pad_to_4: bool,
+        version: &Version,
         what: &'static str,
     ) -> Result<Vec<u8>, Error> {
         let bytes_needed = bit_count
@@ -176,7 +252,7 @@ impl<'a> Reader<'a> {
             .and_then(|n| n.checked_div(8))
             .ok_or(Error::Overflow { what })?;
         let primary = self.take(bytes_needed, what)?.to_vec();
-        if bytes_needed == 3 && pad_to_4 {
+        if bytes_needed == 3 && !version.is_16bit() {
             self.skip(1, what)?;
         }
         Ok(primary)
@@ -190,7 +266,7 @@ impl<'a> Reader<'a> {
 /// # Errors
 ///
 /// Returns [`Error::Truncated`] / [`Error::Overflow`] on out-of-bounds.
-pub(crate) fn u32_le_at(buf: &[u8], offset: usize, what: &'static str) -> Result<u32, Error> {
+pub fn u32_le_at(buf: &[u8], offset: usize, what: &'static str) -> Result<u32, Error> {
     let end = offset.checked_add(4).ok_or(Error::Overflow { what })?;
     let bytes = buf.get(offset..end).ok_or(Error::Truncated { what })?;
     let mut arr = [0u8; 4];

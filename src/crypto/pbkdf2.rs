@@ -3,8 +3,7 @@
 //!
 //! Pascal source reference: `Components/PBKDF2.pas` (HMAC-SHA256
 //! variant only) and `Projects/Src/Shared.EncryptionFunc.pas`
-//! `GenerateEncryptionKey`. Audit doc:
-//! `research-notes/08-issrc-encryption.md` §D.
+//! `GenerateEncryptionKey`.
 //!
 //! The Pascal `String → bytes` conversion for the password is
 //! **UTF-16LE** (no BOM, no NUL terminator) - Delphi 2009+ uses
@@ -19,7 +18,7 @@ use sha2::Sha256;
 /// Encodes `password` to the byte sequence Inno Setup feeds to
 /// PBKDF2: UTF-16LE without BOM/NUL. Matches Pascal's
 /// `StringToBytes(Password)` for `UnicodeString`.
-pub(crate) fn password_bytes_utf16le(password: &str) -> Vec<u8> {
+pub fn password_bytes_utf16le(password: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(password.len().saturating_mul(2));
     for unit in password.encode_utf16() {
         let bytes = unit.to_le_bytes();
@@ -45,16 +44,13 @@ pub(crate) fn password_bytes_utf16le(password: &str) -> Vec<u8> {
 /// `result = U_2 XOR ... XOR U_N`. Equivalently:
 /// `result_buggy = result_standard XOR U_1`.
 ///
-/// Fixed in commit `90f06e4d` (2026-04-21, post `is-7_0_0_2`).
-/// Apply this helper only when the installer's SetupBinVersion
-/// matches preview-3 (marker `(7.0.0.1)` and SetupBinVersion
-/// 7.0.0.2 - they coexist because `is-7_0_0_2` did not bump
-/// `SetupID`).
-pub(crate) fn derive_key_buggy_700_preview3(
-    password: &str,
-    salt: &[u8; 16],
-    iterations: u32,
-) -> [u8; 32] {
+/// Introduced by commit `f4fc1daf` (2026-03-30) and fixed by `90f06e4d`
+/// (2026-04-21): of the releases, only 7.0.0 preview 3 (`is-7_0_0_2`) has
+/// it. It writes SetupID 7.0.0.1 like preview 2 (`is-7_0_0_1`), which
+/// does not, and nothing stored tells them apart, so under that marker
+/// the caller tries [`derive_key`] and then this, and the password
+/// verifier decides.
+pub fn derive_key_buggy_700_preview3(password: &str, salt: &[u8; 16], iterations: u32) -> [u8; 32] {
     let mut key = derive_key(password, salt, iterations);
     // PBKDF2 with iterations=1 emits U_1 directly: the HMAC of
     // (salt || 00 00 00 01) keyed by the password. No need for an
@@ -72,7 +68,7 @@ pub(crate) fn derive_key_buggy_700_preview3(
 /// `iterations` must be ≥ 1 (PBKDF2 spec); we accept the wire
 /// value verbatim and let RustCrypto's implementation handle the
 /// edge cases.
-pub(crate) fn derive_key(password: &str, salt: &[u8; 16], iterations: u32) -> [u8; 32] {
+pub fn derive_key(password: &str, salt: &[u8; 16], iterations: u32) -> [u8; 32] {
     let pwd_bytes = password_bytes_utf16le(password);
     let mut out = [0u8; 32];
     // RustCrypto API: `pbkdf2::<Hmac<Sha256>>(password, salt,
