@@ -1,12 +1,10 @@
 /target
-/research
 /tests/samples/*.exe
 /tests/samples/*.bin
-# Built fixtures (`tests/samples/build/build-wine.sh`). Not `build/` itself:
-# `build/full/app.exe` is a payload the scripts compile in, not an output.
-/tests/samples/plain/*.exe
-/tests/samples/encrypted/*.exe
-/tests/samples/full/*.exe
-/tests/samples/code/*.exe
-/tests/samples/quarantine/*.exe
+# `build-wine.sh` writes `<name>-<variant>.iss` for one compile and removes it.
+/tests/samples/build/*-x64.iss
+/tests/samples/build/*-zip.iss
+/tests/samples/build/*-bzip.iss
+/tests/samples/build/*-lzma.iss
+/tests/samples/build/*-none.iss
 Cargo.lock

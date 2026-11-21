@@ -17,6 +17,11 @@
 #   encrypted.iss       -> ../encrypted/enc-files-tool<slug>.exe
 #   encrypted-full.iss  -> ../encrypted/enc-full-tool<slug>.exe
 #   <name>.iss          -> ../<name>/<name>-tool<slug>.exe
+#   <name>-<variant>    -> <name>.iss built with one directive changed, beside
+#                          it with -<variant> before -tool (e.g.
+#                          ../plain/plain-x64-tool<slug>.exe):
+#                            x64                    SetupArchitecture=x64
+#                            zip, bzip, lzma, none  Compression=<variant>
 #
 # and a second build of the same script with `--alt` as the first argument
 # lands at the same name with `-alt` appended - the nondeterminism check.
@@ -38,19 +43,47 @@ ensure_image() {
     fi
 }
 
+# The directive a `<name>-<variant>` build sets; fails for any other suffix.
+variant_directive() {
+    case "$1" in
+        x64)                echo "SetupArchitecture=x64" ;;
+        zip|bzip|lzma|none) echo "Compression=$1" ;;
+        *)                  return 1 ;;
+    esac
+}
+
 destination() {
-    local slug="$1" script="$2" suffix="$3"
+    local slug="$1" script="$2" suffix="$3" variant="${2##*-}"
+    if [[ "$script" == *-* ]] && variant_directive "$variant" >/dev/null; then
+        local stem
+        stem="$(destination "$slug" "${script%-*}" "$suffix")"
+        echo "${stem/-tool/-${variant}-tool}"
+        return
+    fi
     case "$script" in
         plain)          echo "../plain/plain-tool${slug}${suffix}.exe" ;;
         encrypted)      echo "../encrypted/enc-files-tool${slug}${suffix}.exe" ;;
         encrypted-full) echo "../encrypted/enc-full-tool${slug}${suffix}.exe" ;;
+        spanning-legacy) echo "../spanning/spanning-tool${slug}${suffix}.exe" ;;
         *)              echo "../${script}/${script}-tool${slug}${suffix}.exe" ;;
     esac
 }
 
 # Compiles one script with one compiler and files the output.
 build() {
-    local slug="$1" script="$2" suffix="$3" base out
+    local slug="$1" script="$2" suffix="$3" base out generated=""
+    # `<name>-<variant>` is `<name>.iss` with its output renamed and the
+    # variant's directive set in place of any it had, written here for the
+    # one compile and removed after it.
+    local directive
+    if [[ "$script" == *-* ]] && directive="$(variant_directive "${script##*-}")"; then
+        local source="${script%-*}.iss"
+        [ -f "$source" ] || { echo "no ${source} here" >&2; exit 1; }
+        generated="${script}.iss"
+        sed -E -e "/^${directive%%=*}=/d" \
+            -e "s/^OutputBaseFilename=[^\r]*(\r?)$/OutputBaseFilename=${script}\1\n${directive}\1/" \
+            "$source" > "$generated"
+    fi
     [ -f "${script}.iss" ] || { echo "no ${script}.iss here" >&2; exit 1; }
     base="$(sed -n 's/^OutputBaseFilename=//p' "${script}.iss" | tr -d '\r')"
     [ -n "$base" ] || { echo "${script}.iss names no OutputBaseFilename" >&2; exit 1; }
@@ -60,15 +93,34 @@ build() {
         set -e
         test -f \"\$WINEPREFIX/drive_c/inno/${slug}/ISCC.exe\" \
             || { echo 'no compiler ${slug} in the image; add it to versions.txt' >&2; exit 1; }
-        xvfb-run -a wine 'C:\\inno\\${slug}\\ISCC.exe' /Q 'Z:\\work\\${script}.iss'
+        # \`/Q\` (quiet) only where ISCC's usage lists it: the 1.x to 4.x
+        # ones and the 5.0.0 to 5.0.3 betas take the script alone.
+        quiet=''
+        if xvfb-run -a wine 'C:\\inno\\${slug}\\ISCC.exe' 2>&1 | grep -q '/Q'; then quiet='/Q'; fi
+        xvfb-run -a wine 'C:\\inno\\${slug}\\ISCC.exe' \$quiet 'Z:\\work\\${script}.iss'
         wineserver -w
-        chown $(id -u):$(id -g) '${base}.exe'
+        chown $(id -u):$(id -g) '${base}'.* '${base}'-*.bin 2>/dev/null || true
     " 2> >(grep -v XDG_RUNTIME_DIR >&2)
+
+    [ -z "$generated" ] || rm -f "$generated"
 
     out="$(destination "$slug" "$script" "$suffix")"
     mkdir -p "$(dirname "$out")"
     mv "${base}.exe" "$out"
     echo "[${slug}] -> ${out}"
+    # A disk-spanning build's slices (`<base>-1.bin`, or `<base>.1` before
+    # 2.0) and any setup data it keeps beside the loader (`<base>.0`), under
+    # the names the compiler gave them, in `<fixture>.slices/`.
+    local extra=()
+    shopt -s nullglob
+    extra=("${base}"-*.bin "${base}".[0-9]*)
+    shopt -u nullglob
+    if [ "${#extra[@]}" -gt 0 ]; then
+        rm -rf "${out%.exe}.slices"
+        mkdir -p "${out%.exe}.slices"
+        mv "${extra[@]}" "${out%.exe}.slices/"
+        echo "[${slug}] -> ${out%.exe}.slices/ (${extra[*]})"
+    fi
 }
 
 ensure_image
